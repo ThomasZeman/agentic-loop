@@ -87,10 +87,13 @@ export function ratchetVisualBaseline(baseline, currentFailures) {
 function main() {
     const pkgDir = process.argv[2];
     if (!pkgDir || !existsSync(pkgDir)) {
-        console.error('usage: node visual-failures.mjs <package-dir>');
+        console.error('usage: node visual-failures.mjs <package-dir> [report-relative-path]');
         process.exit(2);
     }
-    const reportPath = path.join(pkgDir, VISUAL_REPORT_RELATIVE_PATH);
+    // The report location is playwright.config.ts's business and so the target project's;
+    // the runner passes its configured `gates.visual.report` here. The default stays what
+    // it always was.
+    const reportPath = path.join(pkgDir, process.argv[3] ?? VISUAL_REPORT_RELATIVE_PATH);
     if (!existsSync(reportPath)) {
         console.error(`no playwright json report at ${reportPath} - did the suite run?`);
         process.exit(3);

@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "siblingsAfter": ["node", "scripts/linear/plan-index-cli.mjs"],
+    "demo": ["node", "scripts/linear/ticket-demo-cli.mjs"],
+    "release": {
+      "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/release-hook.ps1"],
+      "perPlanPlatform": "web",
+      "perBatchPlatform": "android"
+    }
+  }
+}

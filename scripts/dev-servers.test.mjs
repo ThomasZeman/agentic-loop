@@ -3,16 +3,21 @@ import { createServer } from 'node:http'
 import { describe, test } from 'node:test'
 
 import {
-  DEV_SERVERS,
   findDevServer,
   needsFrontendRestart,
   planServerStartup,
   probeServer,
+  serverTable,
   waitForServer,
 } from './dev-servers.mjs'
+import { resolveRunnerConfig } from './runner-config.mjs'
 
-const backend = findDevServer('backend')
-const frontend = findDevServer('frontend')
+// The default table is Boardbash's own pair, per runner-config.mjs - so the descriptors the
+// suite drives are exactly what a config-less run gets.
+const servers = serverTable(resolveRunnerConfig(null))
+const backend = findDevServer(servers, 'backend')
+const frontend = findDevServer(servers, 'frontend')
+const defaultBlind = resolveRunnerConfig(null).watcherBlindPackages
 
 /** A fetch that answers each call from the queue, so a poll can be scripted turn by turn. */
 function scriptedFetch(answers) {
@@ -24,19 +29,34 @@ function scriptedFetch(answers) {
   }
 }
 
-describe('the dev servers a plan needs', () => {
-  test('names both halves of the running app, on the ports the app expects', () => {
-    assert.deepEqual(
-      DEV_SERVERS.map((server) => server.name),
-      ['backend', 'frontend'],
-    )
+describe('serverTable', () => {
+  test('turns the default config into both halves of the running app', () => {
+    assert.deepEqual(servers.map((server) => server.name), ['backend', 'frontend'])
     assert.equal(backend.url, 'http://127.0.0.1:3005/')
     assert.equal(frontend.url, 'http://127.0.0.1:1701/boardbash/')
   })
 
-  test('is asked for by name, and an unknown name is a fault rather than undefined', () => {
-    assert.equal(findDevServer('frontend').npmScript, 'start')
-    assert.throws(() => findDevServer('database'), /unknown dev server 'database'/)
+  test("derives each server's probe predicate from its declared readyWhen", () => {
+    const table = serverTable(resolveRunnerConfig({
+      devServers: [
+        { name: 'lenient', url: 'u', packageDir: 'd', npmScript: 's', readyWhen: 'any-response' },
+        { name: 'strict', url: 'u', packageDir: 'd', npmScript: 's', readyWhen: 'http-200' },
+      ],
+    }))
+    assert.equal(table[0].isReady(404), true)
+    assert.equal(table[1].isReady(404), false)
+    assert.equal(table[1].isReady(200), true)
+  })
+
+  test('an empty table is a project with no dev servers, not a fault', () => {
+    assert.deepEqual(serverTable(resolveRunnerConfig({ devServers: [] })), [])
+  })
+})
+
+describe('findDevServer', () => {
+  test('answers by name, and an unknown name is a fault rather than undefined', () => {
+    assert.equal(findDevServer(servers, 'frontend').npmScript, 'start')
+    assert.throws(() => findDevServer(servers, 'database'), /unknown dev server 'database'/)
   })
 })
 
@@ -181,19 +201,20 @@ describe('planServerStartup', () => {
 })
 
 describe('needsFrontendRestart', () => {
-  test('is true for the packages Parcel resolves through node_modules', () => {
+  test('is true for the packages the config says the watcher is blind to', () => {
     // Parcel compiles these into the bundle but its watcher ignores node_modules, so an
     // edit here produces no rebuild at all - and a mixed old/new bundle that only fails
     // at runtime. Restarting the dev server is the only remedy in the tree.
-    assert.equal(needsFrontendRestart(['shared']), true)
-    assert.equal(needsFrontendRestart(['frontend-shared']), true)
-    assert.equal(needsFrontendRestart(['backend', 'shared']), true)
+    assert.equal(needsFrontendRestart(['shared'], defaultBlind), true)
+    assert.equal(needsFrontendRestart(['frontend-shared'], defaultBlind), true)
+    assert.equal(needsFrontendRestart(['backend', 'shared'], defaultBlind), true)
   })
 
   test('is false for packages the watcher does see, and for none at all', () => {
-    assert.equal(needsFrontendRestart(['frontend-boardfest']), false)
-    assert.equal(needsFrontendRestart(['backend']), false)
-    assert.equal(needsFrontendRestart([]), false)
-    assert.equal(needsFrontendRestart(null), false)
+    assert.equal(needsFrontendRestart(['frontend-boardfest'], defaultBlind), false)
+    assert.equal(needsFrontendRestart(['backend'], defaultBlind), false)
+    assert.equal(needsFrontendRestart([], defaultBlind), false)
+    assert.equal(needsFrontendRestart(null, defaultBlind), false)
+    assert.equal(needsFrontendRestart(['shared'], []), false)
   })
 })

@@ -15,12 +15,10 @@
  */
 import path from 'node:path'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { dependentsOf, readManifests } from './package-closure.mjs'
-
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { loadRunnerConfig } from './runner-config.mjs'
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
@@ -32,7 +30,10 @@ const { values } = parseArgs({
   },
 })
 
-const packagesDir = values['packages-dir'] ?? path.join(REPO_ROOT, 'packages')
+// The working directory is the target repo's root - the runner starts every bridge there.
+// The tool itself lives elsewhere, so nothing here may resolve against import.meta.url.
+const packagesDir =
+  values['packages-dir'] ?? path.join(process.cwd(), loadRunnerConfig(process.cwd()).packagesDir)
 const packages = dependentsOf(values.changed ?? [], readManifests(packagesDir))
 
 process.stdout.write(`${JSON.stringify({ packages })}\n`)

@@ -24,13 +24,15 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { dependencyClosure, readManifests } from './package-closure.mjs'
 import { decideBank, decideVisualReuse } from './preflight-bank.mjs'
+import { loadRunnerConfig } from './runner-config.mjs'
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// The working directory is the target repo's root - the runner starts every bridge there.
+// The tool itself lives elsewhere, so nothing here may resolve against import.meta.url.
+const REPO_ROOT = process.cwd()
 const BANK_FILE_NAME = '.preflight-bank.json'
 
 const BOM = String.fromCharCode(0xfeff)
@@ -76,7 +78,9 @@ function writeBank(bankPath, record) {
 }
 
 function answerBank(bankPath, values) {
-  const { visualPackages, closure } = readVisualClosures(path.join(REPO_ROOT, 'packages'))
+  const packagesDir =
+    values['packages-dir'] ?? path.join(REPO_ROOT, loadRunnerConfig(REPO_ROOT).packagesDir)
+  const { visualPackages, closure } = readVisualClosures(packagesDir)
   const measuredFile = values['measured-file']
   const record = decideBank(readJsonFile(bankPath), {
     commit: values.commit ?? null,
@@ -103,6 +107,7 @@ function main() {
       // A file rather than an argument: the sets run to hundreds of ids.
       'measured-file': { type: 'string' },
       'plans-dir': { type: 'string' },
+      'packages-dir': { type: 'string' },
     },
   })
 

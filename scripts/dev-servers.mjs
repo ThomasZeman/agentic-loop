@@ -3,19 +3,25 @@
  * questions `run-plans.ps1` asks about them.
  *
  * Rule 4 of `plans/_preamble.md` tells an unattended plan to verify a user-visible change in
- * a browser, and `scripts/launch-test-players.ps1` needs "the backend and the dev server
- * already running" to do it. Nothing used to make that true: whether a plan could open the
- * app at all depended on what happened to be running on the machine when the queue started.
- * The runner now guarantees it for the whole batch, and this module holds the parts of that
- * worth testing - PowerShell keeps only what it is good at, which is starting a detached
- * process and killing it again.
+ * a browser, and that needs the app's servers already running. Nothing used to make that
+ * true: whether a plan could open the app at all depended on what happened to be running on
+ * the machine when the queue started. The runner now guarantees it for the whole batch, and
+ * this module holds the parts of that worth testing - PowerShell keeps only what it is good
+ * at, which is starting a detached process and killing it again.
  *
- * Addressed as 127.0.0.1 rather than localhost on purpose: both servers bind 0.0.0.0, which
- * is IPv4 only, while `localhost` on Windows resolves to ::1 first. A probe through the name
- * can therefore fail against a server that is up and answering.
+ * Which servers exist is the target project's business, not this module's: the table comes
+ * from `plans/runner.json` (see runner-config.mjs), whose defaults are Boardbash's two
+ * servers. A project served by no dev server declares `"devServers": []` and the runner
+ * skips the whole arrangement.
+ *
+ * Servers are best addressed as 127.0.0.1 rather than localhost: a server binding 0.0.0.0
+ * is IPv4 only, while `localhost` on Windows resolves to ::1 first, so a probe through the
+ * name can fail against a server that is up and answering.
  */
 
 import { get as httpGet } from 'node:http'
+
+import { readinessOf } from './runner-config.mjs'
 
 /** How long each poll waits for a single answer before treating it as no answer. */
 const PROBE_TIMEOUT_MS = 4000
@@ -23,43 +29,13 @@ const PROBE_TIMEOUT_MS = 4000
 /** Gap between polls while waiting for a server to come up. */
 const POLL_INTERVAL_MS = 2000
 
-export const DEV_SERVERS = Object.freeze([
-  Object.freeze({
-    name: 'backend',
-    url: 'http://127.0.0.1:3005/',
-    packageDir: 'packages/backend',
-    npmScript: 'dev',
-    // tsx compiles the whole server on boot; a cold start on this repo is tens of seconds.
-    startTimeoutSeconds: 180,
-    // Any status at all. There is no health route, so the root answers 404 - which only a
-    // running server can do. Waiting for a 200 there would wait forever.
-    isReady: (status) => status > 0,
-    readiness: 'any HTTP status (no health route; a 404 at / is a live server)',
-  }),
-  Object.freeze({
-    name: 'frontend',
-    url: 'http://127.0.0.1:1701/boardbash/',
-    packageDir: 'packages/frontend-boardfest',
-    npmScript: 'start',
-    // `npm start` clears .parcel-cache first, so every start this runner makes is a cold build.
-    startTimeoutSeconds: 420,
-    // Parcel accepts connections immediately and holds the request until its build finishes,
-    // so only a served page means ready.
-    isReady: (status) => status === 200,
-    readiness: 'HTTP 200 (Parcel answers before its first build is done)',
-  }),
-])
-
 /**
- * The workspace packages Parcel compiles into the bundle but never watches.
- *
- * `frontend-boardfest` imports both through the `node_modules/@nocap/*` workspace symlinks,
- * and Parcel's watcher ignores node_modules - so editing one produces no rebuild at all.
- * The result is worse than a stale bundle: files inside `frontend-boardfest` do rebuild, so
- * the served JS mixes new code against old, which type-checks, builds, and breaks only at
- * runtime. Restarting the dev server is the only remedy in the tree.
+ * The resolved config's server list as probe-ready descriptors: each entry as declared,
+ * plus the `isReady` predicate its `readyWhen` stands for.
  */
-export const WATCHER_BLIND_PACKAGES = Object.freeze(['shared', 'frontend-shared'])
+export function serverTable(config) {
+  return config.devServers.map((server) => ({ ...server, isReady: readinessOf(server) }))
+}
 
 /**
  * A GET that yields only the status, and keeps not one socket open once it has it.
@@ -95,8 +71,8 @@ function describeFailure(error) {
   return cause ? `${message}: ${cause}` : message
 }
 
-export function findDevServer(name) {
-  const server = DEV_SERVERS.find((candidate) => candidate.name === name)
+export function findDevServer(servers, name) {
+  const server = servers.find((candidate) => candidate.name === name)
   if (!server) throw new Error(`unknown dev server '${name}'`)
   return server
 }
@@ -119,7 +95,7 @@ export async function probeServer(server, { fetchImpl, timeoutMs = PROBE_TIMEOUT
   }
 }
 
-export async function probeAll(servers = DEV_SERVERS, options = {}) {
+export async function probeAll(servers, options = {}) {
   const probes = []
   for (const server of servers) probes.push(await probeServer(server, options))
   return probes
@@ -157,7 +133,10 @@ export function planServerStartup(probes) {
   }
 }
 
-/** Did this plan change something the running Parcel will never notice? */
-export function needsFrontendRestart(changedPackages) {
-  return (changedPackages ?? []).some((name) => WATCHER_BLIND_PACKAGES.includes(name))
+/**
+ * Did this plan change a package the frontend bundler compiles in but never watches?
+ * The blind list is the target project's, from its runner config.
+ */
+export function needsFrontendRestart(changedPackages, watcherBlindPackages) {
+  return (changedPackages ?? []).some((name) => watcherBlindPackages.includes(name))
 }

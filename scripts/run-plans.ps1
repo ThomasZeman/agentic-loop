@@ -58,9 +58,10 @@
     The working tree may be dirty under plans/ - queued plan files, half-written ones,
     reports from an earlier batch. Anything dirty outside plans/ stops the run.
 
-    With -ReleaseEachPlan every plan that passes verification is also released: a patch
-    vX.Y.Z-web tag on its commit, pushed, and waited on until its GitHub Actions run
-    concludes. The batch ends with a single vX.Y.Z-android tag. Without the switch the
+    With -ReleaseEachPlan every plan that passes verification is also released, through the
+    project's `release` hook (plans/runner.json): a patch tag on its commit for the per-plan
+    platform, recorded as a pending deploy or waited on with -WaitForDeploy. The batch ends
+    with a single tag on the batch platform, if the hook names one. Without the switch the
     runner creates no tags - its own pushes only ever fast-forward a branch.
 
 .EXAMPLE
@@ -127,9 +128,10 @@ param(
     # Per-plan spend cap in USD. 0 disables the cap.
     [double] $MaxBudgetUsd = 0,
 
-    # Ship every plan that passes verification: a patch vX.Y.Z-web tag, pushed and recorded in
-    # .state.json as a pending deploy - then one vX.Y.Z-android tag covering the whole batch.
-    # Off by default; without it the runner tags nothing.
+    # Ship every plan that passes verification through the project's release hook: a patch tag
+    # on the per-plan platform, recorded in .state.json as a pending deploy - then one tag on
+    # the batch platform covering the whole batch. Off by default; without it the runner tags
+    # nothing. Needs hooks.release in plans/runner.json.
     [switch] $ReleaseEachPlan,
 
     # Block on each web deploy instead of handing it over as pending. The ticket loop settles a
@@ -310,6 +312,106 @@ function Get-SettledPlanNames {
         }
         # Leading comma: returning a set bare would unroll it into its elements.
         return ,$names
+    }
+    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
+<#
+.SYNOPSIS
+    The target repo's runner configuration - plans/runner.json resolved over the defaults.
+.DESCRIPTION
+    Asked of scripts/runner-config-cli.mjs, where the defaults and the validation are
+    tested. A fault is thrown, not softened: this is read before anything else happens,
+    and a queue run over a half-applied config would verify every plan against the wrong
+    gates - eight unattended hours spent finding out what one loud stop here says now.
+#>
+function Get-RunnerConfig {
+    param([string] $RepoRoot)
+
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        $code = Invoke-CapturedProcess -FilePath 'node' `
+            -Arguments @((Join-Path $PSScriptRoot 'runner-config-cli.mjs')) `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+
+        if ($code -ne 0) {
+            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
+            throw "runner-config-cli failed (exit $code): $reason"
+        }
+        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
+# --------------------------------------------------------------------------
+# Hooks -- the target project's own scripts, run at the moments runner.json names
+# --------------------------------------------------------------------------
+
+<#
+.SYNOPSIS
+    Where a hook's program lives: on PATH by name, or in the repo by path.
+.DESCRIPTION
+    Anything with a separator in it is the project's own file and resolves against the repo
+    root, so a project's hooks travel with its clone. Thrown, not softened: a program that
+    cannot be found is a configuration error, and the caller that would swallow it is the
+    one place a wrong answer must not come from.
+#>
+function Resolve-HookProgram {
+    param([string] $RepoRoot, [string] $Program)
+
+    if ($Program -match '[\\/]') {
+        $path = $Program
+        if (-not [System.IO.Path]::IsPathRooted($path)) { $path = Join-Path $RepoRoot $path }
+        if (-not (Test-Path $path)) { throw "hook program not found: $path" }
+        return (Resolve-Path $path).Path
+    }
+
+    $found = Get-Command $Program -ErrorAction SilentlyContinue
+    if (-not $found) { throw "hook program '$Program' is not on PATH" }
+    return $found.Source
+}
+
+<#
+.SYNOPSIS
+    Runs one configured hook with the runner's arguments appended, from the repo root, and
+    hands back its exit code and its JSON answer.
+.DESCRIPTION
+    A hook is a command list from plans/runner.json - the program, then its own arguments -
+    and this appends what the runner has to say. Both streams land on disk; stdout is parsed
+    as JSON when it is any. Nothing here judges the outcome: whether a hook that ran and
+    failed costs a plan, a line on the console, or nothing at all is each caller's call.
+
+    A script file is never the program itself. Windows would hand a bare .ps1 to whatever
+    opens it rather than run it, so a PowerShell hook is spelled
+    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/x.ps1"].
+#>
+function Invoke-Hook {
+    param([string] $RepoRoot, [string[]] $Command, [string[]] $HookArgs = @(),
+          [int] $TimeoutMinutes = 10)
+
+    $program = Resolve-HookProgram -RepoRoot $RepoRoot -Program $Command[0]
+    $arguments = @()
+    if ($Command.Count -gt 1) { $arguments += $Command[1..($Command.Count - 1)] }
+    $arguments += $HookArgs
+
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        $code = Invoke-CapturedProcess -FilePath $program -Arguments $arguments `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot `
+            -ProcessTimeoutMinutes $TimeoutMinutes
+
+        $answer = $null
+        $raw = Get-Content -Path $stdout -Raw -Encoding UTF8
+        if ($raw -and $raw.Trim()) {
+            try { $answer = $raw | ConvertFrom-Json } catch { $answer = $null }
+        }
+        return [pscustomobject]@{
+            exitCode = $code
+            answer   = $answer
+            error    = (Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200)
+        }
     }
     finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
 }
@@ -590,9 +692,8 @@ function New-TempPath {
 .DESCRIPTION
     Start-Process for the same reason Invoke-PackageScript uses it: a native command's stderr
     reaching PowerShell's error stream is a terminating error under $ErrorActionPreference =
-    'Stop'. `gh` and `tag-release.ps1` both write there routinely, so neither may be called
-    directly. A timeout returns 124 and reaps the whole tree, since these children spawn
-    their own.
+    'Stop'. Hooks and tools like `gh` write there routinely, so none may be called directly.
+    A timeout returns 124 and reaps the whole tree, since these children spawn their own.
 #>
 function Invoke-CapturedProcess {
     param(
@@ -745,7 +846,14 @@ function Start-DevServers {
     $owned = @{}
     $probe = Invoke-DevServerCli -RepoRoot $RepoRoot -CliArgs @('--probe') -TimeoutMinutes 2
     if (-not $probe.answer) {
-        return @{ owned = $owned; problems = @("could not probe the dev servers: $($probe.error)") }
+        return @{ owned = $owned; servers = @(); problems = @("could not probe the dev servers: $($probe.error)") }
+    }
+
+    # A project with no dev servers declared is not a fault, but it is not "the app is up"
+    # either: with nothing to probe, every plan is sent to the test harness instead.
+    if (@($probe.answer.servers).Count -eq 0) {
+        return @{ owned = $owned; servers = @()
+                  problems = @('this project declares no dev servers (plans/runner.json devServers is empty)') }
     }
 
     foreach ($server in @($probe.answer.servers)) {
@@ -769,7 +877,7 @@ function Start-DevServers {
     try { $problems = @(Wait-ForDevServers -RepoRoot $RepoRoot -Names @($probe.answer.servers | ForEach-Object { $_.name })) }
     catch { $problems = @("waiting for the dev servers failed: $($_.Exception.Message)") }
 
-    return @{ owned = $owned; problems = $problems }
+    return @{ owned = $owned; servers = @($probe.answer.servers); problems = $problems }
 }
 
 function Stop-DevServers {
@@ -791,20 +899,31 @@ function Stop-DevServers {
     route anyway.
 #>
 function Get-AppStatusLine {
-    param([bool] $Available, [string] $Reason)
+    param([bool] $Available, [string] $Reason, $Servers = @(), [string] $RepoRoot = '')
+
+    $visualScript = $script:Config.gates.visual.script
 
     if ($Available) {
-        return @'
-- The app is already running for this batch and is the runner's to manage: frontend
-  http://localhost:1701/boardbash/, backend http://localhost:3005. Do not start or restart
-  either one. To drive it, launch a throwaway player with
-  `./scripts/launch-test-players.ps1 -Count 1 -Reset -StartId 1` and close it with `-Close`.
-'@
+        # The URLs come from the same probe answer the runner started the servers with, so
+        # the prompt never names a server the target project does not declare.
+        $listed = (@($Servers) | ForEach-Object { "$($_.name) $($_.url)" }) -join ', '
+        $status = "- The app is already running for this batch and is the runner's to manage: $listed." +
+            "`n  Do not start or restart any of these servers."
+
+        # The test-player launcher is Boardbash's own tooling; the sentence about it is
+        # only true in a repo that carries the script.
+        $launcher = ''
+        if ($RepoRoot) { $launcher = Join-Path $RepoRoot 'scripts/launch-test-players.ps1' }
+        if ($launcher -and (Test-Path $launcher)) {
+            $status += " To drive it, launch a throwaway player with`n" +
+                '  `./scripts/launch-test-players.ps1 -Count 1 -Reset -StartId 1` and close it with `-Close`.'
+        }
+        return $status
     }
 
     return @"
 - The live app is NOT available this run. Do not try to start the dev servers or to launch a
-  test player; verify user-visible work in the Playwright harness (``npm run test:visual``),
+  test player; verify user-visible work in the Playwright harness (``npm run $visualScript``),
   which needs neither server, and say in your report that the live app was unavailable.
   Reason: $Reason
 "@
@@ -819,7 +938,7 @@ function Get-CommitPackages {
 
     $files = @(Invoke-Git @('-C', $RepoRoot, 'diff-tree', '--no-commit-id', '--name-only', '-r', $Commit))
     return @($files |
-        ForEach-Object { if ($_ -match '^packages/([^/]+)/') { $Matches[1] } } |
+        ForEach-Object { if ($_ -match $script:PackagesPattern) { $Matches[1] } } |
         Select-Object -Unique)
 }
 
@@ -958,38 +1077,38 @@ function Get-PendingScripts {
     work verifies it against the wrong baseline and, with -ReleaseEachPlan, tags a release for
     it - so a failed part poisons every part behind it rather than only itself.
 
-    The decision lives in scripts/linear/plan-index-cli.mjs, where it is tested; this asks and
-    filters. Asked once per failure rather than once per plan, and a fault answers "no
-    siblings": failing to skip one costs a single bad plan, while throwing here would cost
-    every plan still queued behind it.
+    What makes two plans parts of one ticket is the project's business - the runner has no
+    ticket model of its own - so the question goes to the `siblingsAfter` hook, when there is
+    one: `--plans-dir <dir> --siblings-after <plan file>`, answering a JSON list of plan file
+    names. No hook means no plan is ever held back. Asked once per failure rather than once
+    per plan, and a fault answers "no siblings": failing to skip one costs a single bad plan,
+    while throwing here would cost every plan still queued behind it.
 #>
 function Get-SiblingPlans {
     param([string] $RepoRoot, [string] $PlansDirectory, [string] $PlanName)
 
-    $stdout = New-TempPath '.json'
-    $stderr = New-TempPath '.err.txt'
-    try {
-        $code = Invoke-CapturedProcess -FilePath 'node' -Arguments @(
-            (Join-Path $PSScriptRoot 'linear/plan-index-cli.mjs'),
-            '--plans-dir', $PlansDirectory, '--siblings-after', $PlanName
-        ) -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+    $hook = $script:Config.hooks.siblingsAfter
+    if (-not $hook) { return @() }
 
-        if ($code -ne 0) {
-            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
-            Write-Host "        !! could not look for later parts of this ticket: $reason" -ForegroundColor Red
+    try {
+        $result = Invoke-Hook -RepoRoot $RepoRoot -Command $hook -TimeoutMinutes 2 `
+            -HookArgs @('--plans-dir', $PlansDirectory, '--siblings-after', $PlanName)
+
+        if ($result.exitCode -ne 0) {
+            Write-Host "        !! could not look for later parts of this ticket: $($result.error)" -ForegroundColor Red
             return @()
         }
+        if ($null -eq $result.answer) { return @() }
         # [string[]], not @(): Windows PowerShell 5.1's ConvertFrom-Json writes a JSON array as
         # a single object rather than unrolling it, so @() around it yields one element holding
         # an Object[]. The caller would then hold back a plan called "System.Object[]" and run
         # the sibling it meant to skip - which is how this was found.
-        return [string[]] (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+        return [string[]] $result.answer
     }
     catch {
         Write-Host "        !! could not look for later parts of this ticket: $($_.Exception.Message)" -ForegroundColor Red
         return @()
     }
-    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
 }
 
 <#
@@ -1115,7 +1234,7 @@ function Clear-WorkingTree {
         return $actions
     }
 
-    $reportPath = 'plans/reports/' + ($PlanName -replace '\.md$', '') + '.md'
+    $reportPath = "$($script:PlansRel)/reports/" + ($PlanName -replace '\.md$', '') + '.md'
     Invoke-Git @('-C', $RepoRoot, 'add', '--', $reportPath) | Out-Null
     $staged = @(Invoke-Git @('-C', $RepoRoot, 'diff', '--cached', '--name-only'))
     if ($staged.Count -gt 0) {
@@ -1144,7 +1263,7 @@ function Get-ChangedPackages {
 
     $files = @(Invoke-Git @('-C', $RepoRoot, 'diff', '--name-only', "$From..$To"))
     return @($files |
-        ForEach-Object { if ($_ -match '^packages/([^/]+)/') { $Matches[1] } } |
+        ForEach-Object { if ($_ -match $script:PackagesPattern) { $Matches[1] } } |
         Select-Object -Unique)
 }
 
@@ -1172,7 +1291,7 @@ function Get-PackagesToVerify {
 
     if ($Changed.Count -eq 0) { return @() }
 
-    $cliArgs = @()
+    $cliArgs = @('--packages-dir', $script:PackagesDirAbs)
     foreach ($pkg in $Changed) { $cliArgs += @('--changed', $pkg) }
 
     $stdout = New-TempPath '.json'
@@ -1305,20 +1424,22 @@ function Invoke-VisualSuite {
 
     $outcome = @{ran = $false; failures = @(); problems = @()}
 
-    if (-not (Test-PackageHasScript -Directory $Directory -ScriptName 'test:visual')) { return $outcome }
+    if (-not (Test-PackageHasScript -Directory $Directory -ScriptName $script:Config.gates.visual.script)) { return $outcome }
 
-    $readerScript = Join-Path $RepoRoot 'scripts/visual-failures.mjs'
+    # The reader is the runner's own tooling and travels with it, wherever this script is
+    # installed - never resolved against the target repo, which need not carry a copy.
+    $readerScript = Join-Path $PSScriptRoot 'visual-failures.mjs'
     if (-not (Test-Path $readerScript)) { return $outcome }
 
     $visualLog = Join-Path $LogDir "$Slug.visual-$PackageName.$Stamp.txt"
 
     # A report left by an earlier run would be read as this run's result if Playwright
     # died before writing its own, turning a crashed suite into a silent pass.
-    $reportPath = Join-Path $Directory 'test-results/visual-report.json'
+    $reportPath = Join-Path $Directory $script:Config.gates.visual.report
     if (Test-Path $reportPath) { Remove-Item -Path $reportPath -Force }
 
-    $code = Invoke-PackageScript -Directory $Directory -ScriptName 'test:visual' `
-        -LogFile $visualLog -TestTimeoutMinutes 30
+    $code = Invoke-PackageScript -Directory $Directory -ScriptName $script:Config.gates.visual.script `
+        -LogFile $visualLog -TestTimeoutMinutes $script:Config.gates.visual.timeoutMinutes
 
     # 124 is Invoke-PackageScript's timeout kill. Any report it wrote is half a run.
     if ($code -eq 124) {
@@ -1331,7 +1452,7 @@ function Invoke-VisualSuite {
     }
 
     $failuresLog = Join-Path $LogDir "$Slug.visual-$PackageName.$Stamp.failures.json"
-    $proc = Start-Process -FilePath 'node' -ArgumentList @($readerScript, $Directory) `
+    $proc = Start-Process -FilePath 'node' -ArgumentList @($readerScript, $Directory, $script:Config.gates.visual.report) `
         -RedirectStandardOutput $failuresLog `
         -RedirectStandardError "$failuresLog.stderr.txt" `
         -NoNewWindow -PassThru
@@ -1391,11 +1512,11 @@ function Test-PackageVisuals {
     param([string] $RepoRoot, [string] $PackageName, [string] $Directory,
           [string] $LogDir, [string] $Slug, [string] $Stamp)
 
-    if (-not (Test-PackageHasScript -Directory $Directory -ScriptName 'test:visual')) {
+    if (-not (Test-PackageHasScript -Directory $Directory -ScriptName $script:Config.gates.visual.script)) {
         return (New-VisualVerdict)
     }
 
-    Write-Host "  ++ verifying package '$PackageName' (npm run test:visual - real Chromium)" -ForegroundColor DarkCyan
+    Write-Host "  ++ verifying package '$PackageName' (npm run $($script:Config.gates.visual.script) - real Chromium)" -ForegroundColor DarkCyan
     $outcome = Invoke-VisualSuite -RepoRoot $RepoRoot -PackageName $PackageName -Directory $Directory `
         -LogDir $LogDir -Slug $Slug -Stamp $Stamp
     if (-not $outcome.ran) { return (New-VisualVerdict -Problems @($outcome.problems)) }
@@ -1558,7 +1679,8 @@ function Save-PreflightBank {
         ($script:MeasuredVisuals | ConvertTo-Json -Depth 6) | Out-File -FilePath $measuredFile -Encoding utf8
 
         $cliArgs = @('bank', '--commit', $Commit, '--from', $From,
-                     '--plans-dir', $PlansDir, '--measured-file', $measuredFile)
+                     '--plans-dir', $PlansDir, '--packages-dir', $script:PackagesDirAbs,
+                     '--measured-file', $measuredFile)
         foreach ($pkg in (Get-ChangedPackages -RepoRoot $RepoRoot -From $From -To $Commit)) {
             $cliArgs += @('--changed', $pkg)
         }
@@ -1578,12 +1700,12 @@ function Save-PreflightBank {
 function Get-TestablePackages {
     param([string] $RepoRoot)
 
-    $packagesDir = Join-Path $RepoRoot 'packages'
+    $packagesDir = $script:PackagesDirAbs
     if (-not (Test-Path $packagesDir)) { return @() }
 
     $found = @()
     foreach ($dir in (Get-ChildItem -Path $packagesDir -Directory | Sort-Object Name)) {
-        if (Test-PackageHasScript -Directory $dir.FullName -ScriptName 'test') {
+        if (Test-PackageHasScript -Directory $dir.FullName -ScriptName $script:Config.gates.test.script) {
             $found += [pscustomobject]@{ Name = $dir.Name; Directory = $dir.FullName }
         }
     }
@@ -1633,15 +1755,16 @@ function Invoke-QueuePreflight {
     $banked = Get-BankedVisuals -RepoRoot $RepoRoot -PlansDir $PlansDir -BaseCommit $BaseCommit
 
     foreach ($pkg in $packages) {
-        Write-Host "  ++ $($pkg.Name) (npm run test)" -ForegroundColor DarkCyan
+        Write-Host "  ++ $($pkg.Name) (npm run $($script:Config.gates.test.script))" -ForegroundColor DarkCyan
         $testLog = Join-Path $LogDir "preflight.verify-$($pkg.Name).$Stamp.txt"
-        $code = Invoke-PackageScript -Directory $pkg.Directory -ScriptName 'test' -LogFile $testLog
+        $code = Invoke-PackageScript -Directory $pkg.Directory -ScriptName $script:Config.gates.test.script `
+            -LogFile $testLog -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
         if ($code -ne 0) {
             $red += "package '$($pkg.Name)' test suite is red (exit $code) - see $testLog"
             Write-Host "     RED (exit $code)" -ForegroundColor Red
         }
 
-        if (-not (Test-PackageHasScript -Directory $pkg.Directory -ScriptName 'test:visual')) { continue }
+        if (-not (Test-PackageHasScript -Directory $pkg.Directory -ScriptName $script:Config.gates.visual.script)) { continue }
 
         if ($banked.ContainsKey($pkg.Name)) {
             $baseline[$pkg.Name] = @($banked[$pkg.Name])
@@ -1649,7 +1772,7 @@ function Invoke-QueuePreflight {
             continue
         }
 
-        Write-Host "  ++ $($pkg.Name) (npm run test:visual - real Chromium)" -ForegroundColor DarkCyan
+        Write-Host "  ++ $($pkg.Name) (npm run $($script:Config.gates.visual.script) - real Chromium)" -ForegroundColor DarkCyan
         $outcome = Invoke-VisualSuite -RepoRoot $RepoRoot -PackageName $pkg.Name -Directory $pkg.Directory `
             -LogDir $LogDir -Slug 'preflight' -Stamp $Stamp
         if (-not $outcome.ran) {
@@ -1694,18 +1817,19 @@ function Test-ChangedPackages {
     $problems = @()
     $changed = @(Get-ChangedPackages -RepoRoot $RepoRoot -From $From -To $To)
     foreach ($pkg in (Get-PackagesToVerify -RepoRoot $RepoRoot -Changed $changed)) {
-        $dir = Join-Path $RepoRoot "packages/$pkg"
+        $dir = Join-Path $script:PackagesDirAbs $pkg
         if (-not (Test-Path (Join-Path $dir 'package.json'))) { continue }
 
         # Said out loud, because a plan that edited only frontend-shared is about to spend five
         # minutes on a package it never opened, and a red one names a package its diff does not.
         $because = if ($changed -contains $pkg) { '' } else { " - built on what this plan changed" }
-        Write-Host "  ++ verifying package '$pkg' (npm run test)$because" -ForegroundColor DarkCyan
+        Write-Host "  ++ verifying package '$pkg' (npm run $($script:Config.gates.test.script))$because" -ForegroundColor DarkCyan
         # Named per plan, not just per run. A run-wide name is overwritten by
         # every later plan that touches the same package, so the log a red plan
         # points at ends up holding some other plan's green output.
         $testLog = Join-Path $LogDir "$Slug.verify-$pkg.$Stamp.txt"
-        $code = Invoke-PackageScript -Directory $dir -ScriptName 'test' -LogFile $testLog
+        $code = Invoke-PackageScript -Directory $dir -ScriptName $script:Config.gates.test.script `
+            -LogFile $testLog -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
 
         if ($code -ne 0) {
             $problems += "package '$pkg' test suite is red (exit $code) - see $testLog"
@@ -1737,7 +1861,11 @@ function Test-PackageQualityRatchet {
     param([string] $RepoRoot, [string] $PackageName, [string] $Directory,
           [string] $LogDir, [string] $Slug, [string] $Stamp, [string] $BaselinePath)
 
-    $countsScript = Join-Path $RepoRoot 'scripts/quality-counts.mjs'
+    if (-not $script:Config.gates.quality.enabled) { return @() }
+
+    # The counter is the runner's own tooling and travels with it, wherever this script is
+    # installed - never resolved against the target repo, which need not carry a copy.
+    $countsScript = Join-Path $PSScriptRoot 'quality-counts.mjs'
     if (-not (Test-Path $countsScript)) { return @() }
 
     Write-Host "  ++ quality ratchet for '$PackageName' (tsc errors + eslint problems)" -ForegroundColor DarkCyan
@@ -1748,7 +1876,7 @@ function Test-PackageQualityRatchet {
         -RedirectStandardError "$qualityLog.stderr.txt" `
         -NoNewWindow -PassThru
     try { $null = $proc.Handle } catch { }
-    if (-not $proc.WaitForExit(15 * 60 * 1000)) {
+    if (-not $proc.WaitForExit($script:Config.gates.quality.timeoutMinutes * 60 * 1000)) {
         Stop-ProcessTree -ProcessId $proc.Id
         return @("quality counts for '$PackageName' timed out - see $qualityLog")
     }
@@ -1960,7 +2088,7 @@ Finish that rebase so that both sides survive:
 3. "git add" each file you resolved, then "git -c core.editor=true rebase --continue". Always
    pass -c core.editor=true so nothing opens an editor and blocks forever. The rebase may stop
    again on a later commit: resolve and continue until it reports the rebase is finished.
-4. Run "npm run test" in every package directory you touched and get it green.
+4. Run "npm run $($script:Config.gates.test.script)" in every package directory you touched and get it green.
 
 Hard rules:
 
@@ -2412,7 +2540,7 @@ function Restore-PlanArtifacts {
     param([string] $RepoRoot, [string] $Base, [string] $Branch, [string] $PlanName, [string] $Slug)
 
     $actions = @()
-    $planPath = "plans/$PlanName"
+    $planPath = "$($script:PlansRel)/$PlanName"
     if (-not (Test-Path (Join-Path $RepoRoot $planPath)) -and
         (Test-PathInBranch -RepoRoot $RepoRoot -Branch $Branch -Path $planPath)) {
         Invoke-Git @('-C', $RepoRoot, 'checkout', $Branch, '--', $planPath) | Out-Null
@@ -2420,7 +2548,7 @@ function Restore-PlanArtifacts {
         $actions += "put $planPath back in the tree, untracked, so the queue can retry it"
     }
 
-    $reportPath = "plans/reports/$Slug.md"
+    $reportPath = "$($script:PlansRel)/reports/$Slug.md"
     if (-not (Test-PathInBranch -RepoRoot $RepoRoot -Branch $Branch -Path $reportPath)) { return $actions }
 
     Invoke-Git @('-C', $RepoRoot, 'checkout', $Branch, '--', $reportPath) | Out-Null
@@ -2595,14 +2723,17 @@ function Invoke-PlanOnBranch {
 }
 
 # --------------------------------------------------------------------------
-# Release -- only reached with -ReleaseEachPlan
+# Release -- only reached with -ReleaseEachPlan, and only through the project's release hook
 # --------------------------------------------------------------------------
 
-# The workflow whose run is the deploy. A tag push also starts the version-check workflow,
-# which finishes in seconds and would be read as a green deploy before the build even began.
-$script:DeployWorkflow = 'build-boardbash.yml'
+# How a tag gets made, and how its deploy is watched, is the project's business: the
+# `release` hook in plans/runner.json answers two questions -
+#   tag --platform <p> --log-file <f>      -> {tag, version, actionsUrl}   (null tag = nothing pushed)
+#   status --tag <t> [--fallback-url <u>]  -> {finished, outcome, url}
+# - and the runner keeps what is the same for every project: which commit ships and when
+# (R6.4), the pending/wait policy (R6.2), the batch tag (R6.3), and the record in .state.json.
+
 $script:DeployPollSeconds = 20
-$script:PlatformAnswer = @{ web = '1'; android = '2' }
 
 # Set when a release fails in a way that leaves the tag sequence in doubt. Everything after
 # it is skipped rather than worked around: hand-crafting a tag past a failing script is how
@@ -2611,24 +2742,22 @@ $script:ReleasingDisabled = $false
 
 <#
 .SYNOPSIS
-    Asks scripts/linear/release-cli.mjs one question and returns its parsed JSON answer.
+    Asks the release hook one question and returns its JSON answer, or throws.
+.DESCRIPTION
+    Thrown rather than softened because every caller is already inside Get-PlanRelease's or
+    the batch release's catch, where a fault becomes a recorded non-release - and a hook that
+    exited 0 with no JSON has still not answered.
 #>
-function Invoke-ReleaseCli {
-    param([string] $RepoRoot, [string[]] $CliArgs)
+function Invoke-ReleaseHook {
+    param([string] $RepoRoot, [string[]] $HookArgs, [int] $TimeoutMinutes = 10)
 
-    $stdout = New-TempPath '.json'
-    $stderr = New-TempPath '.err.txt'
-    try {
-        $code = Invoke-CapturedProcess -FilePath 'node' -Arguments (@($script:ReleaseCliPath) + $CliArgs) `
-            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 5
-
-        if ($code -ne 0) {
-            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
-            throw "release-cli $($CliArgs[0]) failed (exit $code): $reason"
-        }
-        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+    $result = Invoke-Hook -RepoRoot $RepoRoot -Command $script:Config.hooks.release.command `
+        -HookArgs $HookArgs -TimeoutMinutes $TimeoutMinutes
+    if ($result.exitCode -ne 0) {
+        throw "release hook $($HookArgs[0]) failed (exit $($result.exitCode)): $($result.error)"
     }
-    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+    if ($null -eq $result.answer) { throw "release hook $($HookArgs[0]) answered with no JSON" }
+    return $result.answer
 }
 
 function Get-DeployColour {
@@ -2657,81 +2786,55 @@ function New-ReleaseRecord {
 
 <#
 .SYNOPSIS
-    Drives scripts/tag-release.ps1 for one patch release and reports what it pushed.
+    Asks the release hook to cut one patch release and reports what it pushed.
 .DESCRIPTION
-    R6.5: that script is the only sanctioned way to make a tag - it is the single source of
-    truth for version discovery, and a hand-rolled `git tag` here would drift from it. It
-    asks three questions in order (bump, platform, confirm), so the answers are fed as three
-    lines on stdin, written as ASCII: a UTF-8 BOM would arrive as part of the first answer
-    and fail its switch.
-
-    The tag is read back out of the output rather than predicted, because the script
-    recomputes the version against origin and its value is the one that shipped.
+    The hook owns version discovery and the tag itself (R6.5: one sanctioned way to make a
+    tag, and it is the project's). The runner only names the platform and where the hook may
+    leave its transcript, and reads back the tag that actually shipped - null when nothing
+    was pushed - rather than predicting one.
 #>
 function New-PatchRelease {
     param([string] $RepoRoot, [string] $Platform, [string] $LogFile)
 
-    $answerFile = New-TempPath '.answers.txt'
-    try {
-        Set-Content -Path $answerFile -Value "1`n$($script:PlatformAnswer[$Platform])`ny" -Encoding ASCII
-        $code = Invoke-CapturedProcess -FilePath 'powershell.exe' `
-            -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script:TagReleasePath) `
-            -StdOutFile $LogFile -StdErrFile "$LogFile.stderr.txt" -StdInFile $answerFile `
-            -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 10
-    }
-    finally { Remove-Item -Path $answerFile -Force -ErrorAction SilentlyContinue }
-
-    $parsed = Invoke-ReleaseCli -RepoRoot $RepoRoot -CliArgs @('parse', '--output-file', $LogFile)
+    $answer = Invoke-ReleaseHook -RepoRoot $RepoRoot -TimeoutMinutes 10 `
+        -HookArgs @('tag', '--platform', $Platform, '--log-file', $LogFile)
     return [pscustomobject]@{
-        tag        = $parsed.tag
-        version    = $parsed.version
-        actionsUrl = $parsed.actionsUrl
-        exitCode   = $code
+        tag        = $answer.tag
+        version    = $answer.version
+        actionsUrl = $answer.actionsUrl
     }
 }
 
 <#
 .SYNOPSIS
-    One poll of the deploy: where `gh` leaves the wait for this tag's Actions run.
+    One poll of the deploy: where the hook leaves the wait for this tag's build.
 .DESCRIPTION
-    A failing `gh` is reported as "not finished yet" rather than as a verdict. A dropped
-    network moment must not be turned into a red deploy on a build that is running fine;
-    if it never recovers the wait ends at its deadline and records a timeout, which is
+    A hook that fails to answer is reported as "not finished yet" rather than as a verdict.
+    A dropped network moment must not be turned into a red deploy on a build that is running
+    fine; if it never recovers the wait ends at its deadline and records a timeout, which is
     exactly what "we do not know" means here.
 #>
 function Get-DeployStatus {
-    param([string] $RepoRoot, [string] $Tag, [string] $FallbackUrl, [string] $LogFile)
+    param([string] $RepoRoot, [string] $Tag, [string] $FallbackUrl)
 
-    $runsFile = New-TempPath '.runs.json'
-    try {
-        $code = Invoke-CapturedProcess -FilePath $script:GhPath -Arguments @(
-            'run', 'list', '--workflow', $script:DeployWorkflow, '--limit', '20',
-            '--json', 'databaseId,headBranch,event,status,conclusion,url'
-        ) -StdOutFile $runsFile -StdErrFile "$LogFile.gh-stderr.txt" `
-          -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 5
+    $hookArgs = @('status', '--tag', $Tag)
+    if ($FallbackUrl) { $hookArgs += @('--fallback-url', $FallbackUrl) }
 
-        if ($code -ne 0) {
-            return [pscustomobject]@{ finished = $false; outcome = 'timeout'; url = $FallbackUrl }
-        }
-
-        $cliArgs = @('status', '--runs-file', $runsFile, '--tag', $Tag)
-        if ($FallbackUrl) { $cliArgs += @('--fallback-url', $FallbackUrl) }
-        return Invoke-ReleaseCli -RepoRoot $RepoRoot -CliArgs $cliArgs
-    }
-    finally { Remove-Item -Path $runsFile -Force -ErrorAction SilentlyContinue }
+    try { return Invoke-ReleaseHook -RepoRoot $RepoRoot -HookArgs $hookArgs -TimeoutMinutes 5 }
+    catch { return [pscustomobject]@{ finished = $false; outcome = 'timeout'; url = $FallbackUrl } }
 }
 
 <#
 .SYNOPSIS
-    Waits for this tag's Actions run to conclude, bounded by -DeployTimeoutMinutes. Only
-    reached under -WaitForDeploy; by default the run is handed over as a pending deploy.
+    Waits for this tag's build to conclude, bounded by -DeployTimeoutMinutes. Only reached
+    under -WaitForDeploy; by default the run is handed over as a pending deploy.
 #>
 function Wait-ForDeploy {
-    param([string] $RepoRoot, [string] $Tag, [string] $FallbackUrl, [string] $LogFile)
+    param([string] $RepoRoot, [string] $Tag, [string] $FallbackUrl)
 
     $deadline = (Get-Date).AddMinutes($DeployTimeoutMinutes)
     while ($true) {
-        $status = Get-DeployStatus -RepoRoot $RepoRoot -Tag $Tag -FallbackUrl $FallbackUrl -LogFile $LogFile
+        $status = Get-DeployStatus -RepoRoot $RepoRoot -Tag $Tag -FallbackUrl $FallbackUrl
         if ($status.finished -or (Get-Date) -ge $deadline) { return $status }
         Start-Sleep -Seconds $script:DeployPollSeconds
     }
@@ -2746,15 +2849,15 @@ function Wait-ForDeploy {
     that ran after it.
 
     R6.2: the build is not waited on. That wait cost a median of 6.3 minutes per shipped plan,
-    serial with everything else, and bought nothing the ticket loop cannot do later: a record
-    left `pending` is polled by scripts/linear/deploy-pending.mjs on a later tick, which settles
-    it and moves the ticket. -WaitForDeploy asks for the verdict here instead, for a standalone
-    run with no loop behind it.
+    serial with everything else, and bought nothing a later process cannot do: a record left
+    `pending` in .state.json can be polled and settled by whatever the project runs between
+    batches (Boardbash's ticket loop, for one). -WaitForDeploy asks for the verdict here
+    instead, for a standalone run with nothing behind it.
 
     `pending` is only ever recorded for a tag that was actually pushed - there would be nothing
     to poll otherwise, and the ticket would be held open forever. A release that produces no tag
     is not retried and not worked around: it stays `not-released` and disables releasing for the
-    rest of the run (including the android tag), because the next patch number is no longer
+    rest of the run (including the batch tag), because the next patch number is no longer
     something this script can reason about unattended.
 #>
 function Publish-PlanRelease {
@@ -2764,11 +2867,12 @@ function Publish-PlanRelease {
         return (New-ReleaseRecord -Problem 'releasing was disabled earlier in this run')
     }
 
-    $logFile = Join-Path $LogDir "$Slug.release-web.$Stamp.txt"
-    $tagged = New-PatchRelease -RepoRoot $RepoRoot -Platform 'web' -LogFile $logFile
+    $platform = $script:Config.hooks.release.perPlanPlatform
+    $logFile = Join-Path $LogDir "$Slug.release-$platform.$Stamp.txt"
+    $tagged = New-PatchRelease -RepoRoot $RepoRoot -Platform $platform -LogFile $logFile
     if (-not $tagged.tag) {
         $script:ReleasingDisabled = $true
-        $problem = "tag-release.ps1 pushed no tag (exit $($tagged.exitCode)) - see $logFile"
+        $problem = "the release hook pushed no $platform tag - see $logFile"
         Write-Host "  !! $problem" -ForegroundColor Red
         Write-Host '     releasing is off for the rest of this run' -ForegroundColor Red
         return (New-ReleaseRecord -Problem $problem)
@@ -2786,7 +2890,7 @@ function Publish-PlanRelease {
     }
 
     Write-Host "  ++ pushed $($tagged.tag) - waiting up to $DeployTimeoutMinutes min for the deploy" -ForegroundColor DarkCyan
-    $status = Wait-ForDeploy -RepoRoot $RepoRoot -Tag $tagged.tag -FallbackUrl $tagged.actionsUrl -LogFile $logFile
+    $status = Wait-ForDeploy -RepoRoot $RepoRoot -Tag $tagged.tag -FallbackUrl $tagged.actionsUrl
     $record.deploy = $status.outcome
     $record.actionsUrl = $status.url
     return $record
@@ -2814,49 +2918,49 @@ function Get-PlanRelease {
     }
 }
 
-function Test-AndroidReleaseOwed {
-    param([string] $RepoRoot, [object[]] $Releases)
+<#
+.SYNOPSIS
+    R6.3: has the finished batch earned its one batch-platform tag? Only if something shipped.
+#>
+function Test-BatchReleaseOwed {
+    param([object[]] $Releases)
 
-    $releasesFile = New-TempPath '.releases.json'
-    try {
-        $json = '[]'
-        if ($Releases.Count -gt 0) { $json = ConvertTo-Json -InputObject ([object[]]$Releases) -Depth 4 }
-        Set-Content -Path $releasesFile -Value $json -Encoding UTF8
-
-        return (Invoke-ReleaseCli -RepoRoot $RepoRoot -CliArgs @('android', '--releases-file', $releasesFile)).owed
-    }
-    finally { Remove-Item -Path $releasesFile -Force -ErrorAction SilentlyContinue }
+    return @($Releases | Where-Object { $_.tag }).Count -gt 0
 }
 
 <#
 .SYNOPSIS
-    R6.3: one android tag for the whole batch, cut after the last plan.
+    R6.3: one tag on the batch platform for the whole run, cut after the last plan.
 .DESCRIPTION
-    Per-plan android releases would mean one Play Store submission per ticket. This tag is
-    not waited on: an android build ends in a submission a human reviews anyway, and holding
-    the queue's tickets unresolved for its duration buys nothing.
+    Per-plan releases on a store-reviewed platform would mean one submission per ticket. This
+    tag is not waited on: such a build ends in a submission a human reviews anyway, and
+    holding the queue's tickets unresolved for its duration buys nothing. A project whose
+    release hook names no batch platform gets no batch tag.
 #>
-function Publish-BatchAndroidRelease {
+function Publish-BatchRelease {
     param([string] $RepoRoot, [object[]] $Releases, [string] $LogDir, [string] $Stamp)
 
-    if (-not (Test-AndroidReleaseOwed -RepoRoot $RepoRoot -Releases $Releases)) {
-        Write-Host 'No plan shipped this run - no android release.' -ForegroundColor DarkGray
+    $platform = $script:Config.hooks.release.perBatchPlatform
+    if (-not $platform) { return $null }
+
+    if (-not (Test-BatchReleaseOwed -Releases $Releases)) {
+        Write-Host "No plan shipped this run - no $platform release." -ForegroundColor DarkGray
         return $null
     }
     if ($script:ReleasingDisabled) {
-        Write-Host 'Android release skipped - releasing was disabled earlier in this run.' -ForegroundColor Red
+        Write-Host "$platform release skipped - releasing was disabled earlier in this run." -ForegroundColor Red
         return (New-ReleaseRecord -Problem 'releasing was disabled earlier in this run')
     }
 
-    $logFile = Join-Path $LogDir "batch.release-android.$Stamp.txt"
-    $tagged = New-PatchRelease -RepoRoot $RepoRoot -Platform 'android' -LogFile $logFile
+    $logFile = Join-Path $LogDir "batch.release-$platform.$Stamp.txt"
+    $tagged = New-PatchRelease -RepoRoot $RepoRoot -Platform $platform -LogFile $logFile
     if (-not $tagged.tag) {
-        $problem = "tag-release.ps1 pushed no android tag (exit $($tagged.exitCode)) - see $logFile"
+        $problem = "the release hook pushed no $platform tag - see $logFile"
         Write-Host "  !! $problem" -ForegroundColor Red
         return (New-ReleaseRecord -Problem $problem)
     }
 
-    Write-Host "Android release $($tagged.tag) pushed - not waited on. $($tagged.actionsUrl)" -ForegroundColor Green
+    Write-Host "$platform release $($tagged.tag) pushed - not waited on. $($tagged.actionsUrl)" -ForegroundColor Green
     $record = New-ReleaseRecord
     $record.tag = $tagged.tag
     $record.version = $tagged.version
@@ -2864,16 +2968,19 @@ function Publish-BatchAndroidRelease {
     return $record
 }
 
+<#
+.SYNOPSIS
+    -ReleaseEachPlan is only honoured for a project that declares a release hook, and its
+    program has to resolve now - not an hour into the first plan.
+#>
 function Assert-ReleaseToolsPresent {
-    $script:TagReleasePath = Join-Path $PSScriptRoot 'tag-release.ps1'
-    $script:ReleaseCliPath = Join-Path $PSScriptRoot 'linear/release-cli.mjs'
-    foreach ($path in @($script:TagReleasePath, $script:ReleaseCliPath)) {
-        if (-not (Test-Path $path)) { throw "-ReleaseEachPlan needs $path, which is missing." }
-    }
+    param([string] $RepoRoot)
 
-    $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if (-not $gh) { throw "-ReleaseEachPlan needs the 'gh' CLI on PATH to watch the deploy." }
-    $script:GhPath = $gh.Source
+    $hook = $script:Config.hooks.release
+    if (-not $hook) {
+        throw '-ReleaseEachPlan needs hooks.release in plans/runner.json - this project declares no release hook.'
+    }
+    $null = Resolve-HookProgram -RepoRoot $RepoRoot -Program $hook.command[0]
 }
 
 # --------------------------------------------------------------------------
@@ -2902,30 +3009,25 @@ function Assert-ReleaseToolsPresent {
 function Invoke-TicketDemoCli {
     param([string] $RepoRoot, [string] $Command, [string] $PlanPath, [string] $Version)
 
-    $cli = Join-Path $PSScriptRoot 'linear/ticket-demo-cli.mjs'
-    if (-not (Test-Path $cli)) { return $null }
+    # The `demo` hook: `post|clear --plan <path> [--version <v>]`. No hook, no demo.
+    $hook = $script:Config.hooks.demo
+    if (-not $hook) { return $null }
 
-    $cliArgs = @($cli, $Command, '--plan', $PlanPath)
-    if ($Version) { $cliArgs += @('--version', $Version) }
+    $hookArgs = @($Command, '--plan', $PlanPath)
+    if ($Version) { $hookArgs += @('--version', $Version) }
 
-    $stdout = New-TempPath '.json'
-    $stderr = New-TempPath '.err.txt'
     try {
-        $code = Invoke-CapturedProcess -FilePath 'node' -Arguments $cliArgs `
-            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 10
-
-        if ($code -ne 0) {
-            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
-            Write-Host "  !! ticket demo ($Command) failed (exit $code): $reason" -ForegroundColor Yellow
+        $result = Invoke-Hook -RepoRoot $RepoRoot -Command $hook -HookArgs $hookArgs -TimeoutMinutes 10
+        if ($result.exitCode -ne 0) {
+            Write-Host "  !! ticket demo ($Command) failed (exit $($result.exitCode)): $($result.error)" -ForegroundColor Yellow
             return $null
         }
-        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+        return $result.answer
     }
     catch {
         Write-Host "  !! ticket demo ($Command) failed: $($_.Exception.Message)" -ForegroundColor Yellow
         return $null
     }
-    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
 }
 
 <#
@@ -2960,9 +3062,25 @@ function Clear-PlanDemo {
 # --------------------------------------------------------------------------
 
 $repoRoot = Get-RepoRoot
-if ($ReleaseEachPlan) { Assert-ReleaseToolsPresent }
+
+# The target repo's configuration, read before anything else: every gate, path and server
+# below comes from it. Script-scoped like $script:PlanEffort - it follows the run, and
+# threading it through every function that names a gate would be all noise.
+$script:Config = Get-RunnerConfig -RepoRoot $repoRoot
+$script:PackagesDirAbs = Join-Path $repoRoot $script:Config.packagesDir
+$script:PackagesPattern = '^' + [regex]::Escape($script:Config.packagesDir) + '/([^/]+)/'
+
+if ($ReleaseEachPlan) { Assert-ReleaseToolsPresent -RepoRoot $repoRoot }
 if (-not $PlansDir) { $PlansDir = Join-Path $repoRoot 'plans' }
 $PlansDir = (Resolve-Path $PlansDir).Path
+
+# The plans directory as git spells it: repo-relative and forward-slashed. Used wherever a
+# plan file or report is named in a git pathspec, which used to hardcode 'plans/' and so
+# silently ignored -PlansDir.
+$script:PlansRel = ($PlansDir -replace '\\', '/')
+if ($PlansDir.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    $script:PlansRel = ($PlansDir.Substring($repoRoot.Length).TrimStart('\', '/') -replace '\\', '/')
+}
 
 $preamblePath = Join-Path $PlansDir '_preamble.md'
 if (-not (Test-Path $preamblePath)) { throw "Missing shared preamble: $preamblePath" }
@@ -3031,6 +3149,7 @@ $syncRemote = ''
 # here; nor does anything under -DryRun or -SkipDevServers.
 $devServers = @{}
 $appAvailable = $false
+$appServers = @()
 $appReason = 'the runner was started with -SkipDevServers'
 if ($DryRun) { $appReason = 'this is a dry run - nothing is executed' }
 
@@ -3071,6 +3190,7 @@ if (-not $DryRun) {
         Write-Host 'Dev servers  |  the running app rule 4 of the preamble sends each plan to' -ForegroundColor Cyan
         $brought = Start-DevServers -RepoRoot $repoRoot -LogDir $logDir -Stamp $stamp
         $devServers = $brought.owned
+        $appServers = @($brought.servers)
         if ($brought.problems.Count -gt 0) {
             # Not fatal. A batch of backend plans needs no browser at all, and a frontend plan
             # still has the Playwright harness, which needs neither server. What a plan must not
@@ -3086,12 +3206,12 @@ if (-not $DryRun) {
     }
 }
 
-$appStatus = Get-AppStatusLine -Available $appAvailable -Reason $appReason
+$appStatus = Get-AppStatusLine -Available $appAvailable -Reason $appReason -Servers $appServers -RepoRoot $repoRoot
 
 $index = 0
 $needsReview = @()
 $halted = $null
-$webReleases = @()
+$planReleases = @()
 
 # Plan name -> the earlier part of its ticket that failed. Filled in as failures happen, so a
 # plan reaches it only if something ahead of it in this same run went red (R4.9).
@@ -3160,7 +3280,7 @@ try {
             if ($ReleaseEachPlan) {
                 $deployPlan = 'and record its deploy as pending for the ticket loop to settle'
                 if ($WaitForDeploy) { $deployPlan = "then wait up to $DeployTimeoutMinutes min for its deploy" }
-                Write-Host "  (dry run) would push a patch -web tag once verified, $deployPlan" -ForegroundColor Yellow
+                Write-Host "  (dry run) would push a patch $($script:Config.hooks.release.perPlanPlatform) tag once verified, $deployPlan" -ForegroundColor Yellow
             }
             continue
         }
@@ -3220,7 +3340,7 @@ try {
                 $entry['release'] = $release
                 Write-RunState -Path $statePath -State $state
                 if ($release.tag) {
-                    $webReleases += $release
+                    $planReleases += $release
                     $shippedVersion = $release.version
                     Write-Host "  ++ $($release.tag) deploy: $($release.deploy)  $($release.actionsUrl)" `
                         -ForegroundColor (Get-DeployColour $release.deploy)
@@ -3278,8 +3398,8 @@ finally {
 
 Write-Host ''
 if ($DryRun) {
-    if ($ReleaseEachPlan) {
-        Write-Host 'Dry run: the batch would end with one patch -android tag covering every plan that shipped.' -ForegroundColor Yellow
+    if ($ReleaseEachPlan -and $script:Config.hooks.release.perBatchPlatform) {
+        Write-Host "Dry run: the batch would end with one patch $($script:Config.hooks.release.perBatchPlatform) tag covering every plan that shipped." -ForegroundColor Yellow
     }
     Write-Host 'Dry run complete - nothing was executed.' -ForegroundColor Yellow
     return
@@ -3288,16 +3408,16 @@ if ($DryRun) {
 # R6.3: after the last plan, never per plan. Recorded against the run rather than any one
 # plan, under a key no plan file can collide with - every plan name ends in .md.
 if ($ReleaseEachPlan) {
-    try { $android = Publish-BatchAndroidRelease -RepoRoot $repoRoot -Releases $webReleases -LogDir $logDir -Stamp $stamp }
+    try { $batchRelease = Publish-BatchRelease -RepoRoot $repoRoot -Releases $planReleases -LogDir $logDir -Stamp $stamp }
     catch {
-        Write-Host "Android release failed: $($_.Exception.Message)" -ForegroundColor Red
-        $android = New-ReleaseRecord -Problem "android release failed: $($_.Exception.Message)"
+        Write-Host "Batch release failed: $($_.Exception.Message)" -ForegroundColor Red
+        $batchRelease = New-ReleaseRecord -Problem "batch release failed: $($_.Exception.Message)"
     }
 
     $state['_run'] = [ordered]@{
-        stamp          = $stamp
-        finishedAt     = (Get-Date).ToString('o')
-        androidRelease = $android
+        stamp        = $stamp
+        finishedAt   = (Get-Date).ToString('o')
+        batchRelease = $batchRelease
     }
     Write-RunState -Path $statePath -State $state
     Write-Host ''
@@ -3339,7 +3459,7 @@ if ($skipped.Count -gt 0) {
 if ($needsReview.Count -gt 0) {
     Write-Host "Queue finished. $($needsReview.Count) plan(s) need review:" -ForegroundColor Yellow
     foreach ($name in $needsReview) { Write-Host "  - $name" -ForegroundColor Yellow }
-    Write-Host "Read their reports under plans/reports/, then re-run to retry them." -ForegroundColor Yellow
+    Write-Host "Read their reports under $($script:PlansRel)/reports/, then re-run to retry them." -ForegroundColor Yellow
     exit 1
 }
 
