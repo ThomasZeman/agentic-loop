@@ -12,12 +12,33 @@ import {
 } from './dev-servers.mjs'
 import { resolveRunnerConfig } from './runner-config.mjs'
 
-// The default table is Boardbash's own pair, per runner-config.mjs - so the descriptors the
-// suite drives are exactly what a config-less run gets.
-const servers = serverTable(resolveRunnerConfig(null))
+// A two-server app in the shape of Boardbash's: a backend that only proves it is alive, and
+// a Parcel-style frontend that answers before it is actually ready. Declared explicitly, as
+// a project's runner.json would - the defaults carry no servers at all.
+const TWO_SERVER_CONFIG = resolveRunnerConfig({
+  devServers: [
+    {
+      name: 'backend',
+      url: 'http://127.0.0.1:3005/',
+      packageDir: 'packages/backend',
+      npmScript: 'dev',
+      readyWhen: 'any-response',
+    },
+    {
+      name: 'frontend',
+      url: 'http://127.0.0.1:1701/boardbash/',
+      packageDir: 'packages/frontend-boardfest',
+      npmScript: 'start',
+      startTimeoutSeconds: 420,
+      readyWhen: 'http-200',
+    },
+  ],
+  watcherBlindPackages: ['shared', 'frontend-shared'],
+})
+const servers = serverTable(TWO_SERVER_CONFIG)
 const backend = findDevServer(servers, 'backend')
 const frontend = findDevServer(servers, 'frontend')
-const defaultBlind = resolveRunnerConfig(null).watcherBlindPackages
+const declaredBlind = TWO_SERVER_CONFIG.watcherBlindPackages
 
 /** A fetch that answers each call from the queue, so a poll can be scripted turn by turn. */
 function scriptedFetch(answers) {
@@ -30,7 +51,7 @@ function scriptedFetch(answers) {
 }
 
 describe('serverTable', () => {
-  test('turns the default config into both halves of the running app', () => {
+  test('turns a declared config into both halves of the running app', () => {
     assert.deepEqual(servers.map((server) => server.name), ['backend', 'frontend'])
     assert.equal(backend.url, 'http://127.0.0.1:3005/')
     assert.equal(frontend.url, 'http://127.0.0.1:1701/boardbash/')
@@ -48,8 +69,9 @@ describe('serverTable', () => {
     assert.equal(table[1].isReady(200), true)
   })
 
-  test('an empty table is a project with no dev servers, not a fault', () => {
+  test('an empty table is a project with no dev servers, not a fault - and is the default', () => {
     assert.deepEqual(serverTable(resolveRunnerConfig({ devServers: [] })), [])
+    assert.deepEqual(serverTable(resolveRunnerConfig(null)), [])
   })
 })
 
@@ -205,16 +227,16 @@ describe('needsFrontendRestart', () => {
     // Parcel compiles these into the bundle but its watcher ignores node_modules, so an
     // edit here produces no rebuild at all - and a mixed old/new bundle that only fails
     // at runtime. Restarting the dev server is the only remedy in the tree.
-    assert.equal(needsFrontendRestart(['shared'], defaultBlind), true)
-    assert.equal(needsFrontendRestart(['frontend-shared'], defaultBlind), true)
-    assert.equal(needsFrontendRestart(['backend', 'shared'], defaultBlind), true)
+    assert.equal(needsFrontendRestart(['shared'], declaredBlind), true)
+    assert.equal(needsFrontendRestart(['frontend-shared'], declaredBlind), true)
+    assert.equal(needsFrontendRestart(['backend', 'shared'], declaredBlind), true)
   })
 
   test('is false for packages the watcher does see, and for none at all', () => {
-    assert.equal(needsFrontendRestart(['frontend-boardfest'], defaultBlind), false)
-    assert.equal(needsFrontendRestart(['backend'], defaultBlind), false)
-    assert.equal(needsFrontendRestart([], defaultBlind), false)
-    assert.equal(needsFrontendRestart(null, defaultBlind), false)
+    assert.equal(needsFrontendRestart(['frontend-boardfest'], declaredBlind), false)
+    assert.equal(needsFrontendRestart(['backend'], declaredBlind), false)
+    assert.equal(needsFrontendRestart([], declaredBlind), false)
+    assert.equal(needsFrontendRestart(null, declaredBlind), false)
     assert.equal(needsFrontendRestart(['shared'], []), false)
   })
 })
