@@ -1849,6 +1849,9 @@ function Test-ChangedPackages {
 
     $problems = @()
     $changed = @(Get-ChangedPackages -RepoRoot $RepoRoot -From $From -To $To)
+    if ($changed.Count -eq 0 -and -not (Test-Path $script:PackagesDirAbs)) {
+        Write-Host "     no package under '$($script:Config.packagesDir)/' was touched - nothing to verify (the directory does not exist)" -ForegroundColor DarkYellow
+    }
     foreach ($pkg in (Get-PackagesToVerify -RepoRoot $RepoRoot -Changed $changed)) {
         $dir = Join-Path $script:PackagesDirAbs $pkg
         if (-not (Test-Path (Join-Path $dir 'package.json'))) { continue }
@@ -3289,6 +3292,14 @@ $repoRoot = Get-RepoRoot
 $script:Config = Get-RunnerConfig -RepoRoot $repoRoot
 $script:PackagesDirAbs = Join-Path $repoRoot $script:Config.packagesDir
 $script:PackagesPattern = '^' + [regex]::Escape($script:Config.packagesDir) + '/([^/]+)/'
+
+# Said out loud, not thrown: a repo with no packages is legitimate, but a typo here would
+# otherwise merge every plan of an eight-hour run with no test verification and no sign of it.
+if (-not (Test-Path $script:PackagesDirAbs)) {
+    Write-Host "  !! packagesDir '$($script:Config.packagesDir)' does not exist under the repo root ($repoRoot)" -ForegroundColor Yellow
+    Write-Host "  !! no package tests will be verified for any plan in this run" -ForegroundColor Yellow
+    Write-Host "  !! set packagesDir in plans/runner.json to the workspace directory that holds the packages" -ForegroundColor Yellow
+}
 
 if ($ReleaseEachPlan) { Assert-ReleaseToolsPresent -RepoRoot $repoRoot }
 if (-not $PlansDir) { $PlansDir = Join-Path $repoRoot 'plans' }

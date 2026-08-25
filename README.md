@@ -75,6 +75,8 @@ needs an almost empty one. Another project overrides what differs:
 
 - `packagesDir` — the directory holding one workspace package per subdirectory. Every
   package with the `test` gate's script is swept in pre-flight and verified when changed.
+  A directory that does not exist is warned about at startup (`!!`) and means no package
+  verification for any plan in the run - check the value if the warning surprises you.
 - `gates.test` / `gates.visual` — npm script names and deadlines. The visual gate applies
   only to packages that define its script; `report` is where its JSON report lands,
   relative to the package directory (Playwright report shape).
