@@ -52,9 +52,9 @@ project's `.claude/skills/` and adapt.
 
 ## Per-project configuration: `plans/runner.json`
 
-Optional. Every field defaults to the value the runner grew up with inside Boardbash, so a
-repo with no config file behaves exactly as the original runner did — Boardbash itself
-needs an almost empty one. Another project overrides what differs:
+Optional. The defaults are neutral npm conventions — a `packages/` workspace, `test` and
+`test:visual` gate scripts, the quality ratchet on — with no dev servers, no watcher-blind
+packages and no hooks. A project declares what it has and overrides what differs:
 
 ```json
 {
@@ -114,6 +114,9 @@ stdout. A script file is never the program itself: spell a PowerShell hook as
 }
 ```
 
+A release hook must name `perPlanPlatform`; `perBatchPlatform` is `null` (no batch tag)
+unless given.
+
 | Hook | Called with | Answers | When |
 | --- | --- | --- | --- |
 | `siblingsAfter` | `--plans-dir <dir> --siblings-after <plan file>` | JSON list of plan file names | after a plan fails: those plans are recorded `skipped` and not run this batch (later parts of the same ticket) |
@@ -126,7 +129,8 @@ prints a line, a `tag` that pushes nothing disables releasing for the rest of th
 `-ReleaseEachPlan` without a release hook is refused at startup, as is a hook whose program
 cannot be found.
 
-`examples/boardbash/` holds Boardbash's `runner.json` and its `release-hook.ps1` — the
+`examples/boardbash/` holds Boardbash's complete `runner.json` (its two dev servers, its
+watcher-blind packages, its hooks) and its `release-hook.ps1` — the
 adapter that drives `scripts/tag-release.ps1` and reads GitHub Actions through `gh`, lifted
 out of the runner. Both are meant to be copied into the Boardbash repo when it adopts this
 tool.
@@ -134,8 +138,6 @@ tool.
 ## Still Boardbash-shaped (later phases)
 
 - The two skills under `templates/skills/` are Boardbash's own and need per-project rewrites.
-- The default `devServers` table is still Boardbash's pair; it flips to `[]` once
-  Boardbash carries its own `runner.json`.
 
 ## Development
 

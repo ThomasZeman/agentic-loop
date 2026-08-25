@@ -21,15 +21,15 @@ describe('resolveRunnerConfig', () => {
     assert.deepEqual(resolveRunnerConfig(null), DEFAULT_CONFIG)
   })
 
-  test('defaults describe the layout the runner grew up with', () => {
+  test('defaults are generic npm conventions, with no servers or blind packages', () => {
     const config = resolveRunnerConfig({})
     assert.equal(config.packagesDir, 'packages')
     assert.equal(config.gates.test.script, 'test')
     assert.equal(config.gates.visual.script, 'test:visual')
     assert.equal(config.gates.visual.report, 'test-results/visual-report.json')
     assert.equal(config.gates.quality.enabled, true)
-    assert.equal(config.devServers.length, 2)
-    assert.deepEqual(config.watcherBlindPackages, ['shared', 'frontend-shared'])
+    assert.deepEqual(config.devServers, [])
+    assert.deepEqual(config.watcherBlindPackages, [])
   })
 
   test('a top-level override replaces only its own key', () => {
@@ -115,7 +115,9 @@ describe('resolveRunnerConfig', () => {
   })
 
   test('the release hook carries the platform names its command is asked to tag', () => {
-    const config = resolveRunnerConfig({ hooks: { release: { command: ['pwsh', 'release-hook.ps1'] } } })
+    const config = resolveRunnerConfig({
+      hooks: { release: { command: ['pwsh', 'release-hook.ps1'], perPlanPlatform: 'web', perBatchPlatform: 'android' } },
+    })
     assert.deepEqual(config.hooks.release, {
       command: ['pwsh', 'release-hook.ps1'],
       perPlanPlatform: 'web',
@@ -123,9 +125,20 @@ describe('resolveRunnerConfig', () => {
     })
   })
 
-  test('a release hook may say there is no batch platform at all', () => {
+  test('a release hook without perPlanPlatform is refused, naming the key', () => {
+    assert.throws(
+      () => resolveRunnerConfig({ hooks: { release: { command: ['pwsh', 'r.ps1'] } } }),
+      /hooks\.release\.perPlanPlatform/,
+    )
+    assert.throws(
+      () => resolveRunnerConfig({ hooks: { release: { command: ['pwsh', 'r.ps1'], perPlanPlatform: '' } } }),
+      /hooks\.release\.perPlanPlatform/,
+    )
+  })
+
+  test('a release hook has no batch platform unless it names one', () => {
     const config = resolveRunnerConfig({
-      hooks: { release: { command: ['pwsh', 'r.ps1'], perBatchPlatform: null } },
+      hooks: { release: { command: ['pwsh', 'r.ps1'], perPlanPlatform: 'web' } },
     })
     assert.equal(config.hooks.release.perBatchPlatform, null)
   })

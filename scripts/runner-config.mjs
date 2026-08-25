@@ -2,10 +2,11 @@
  * The per-project configuration of the plan runner, read from `plans/runner.json` in the
  * repo the runner is pointed at.
  *
- * The runner grew up inside Boardbash, and every default here is the value that used to be
- * hardcoded - so a repo with no config file behaves exactly as the runner always has, and
- * Boardbash itself needs an almost empty one. Another project overrides only what differs:
- * its workspace directory, its gate scripts, its own dev servers (or none, as `[]`).
+ * The defaults are neutral: generic npm conventions (a `packages/` workspace, `test` and
+ * `test:visual` scripts, the quality ratchet on), no dev servers, no watcher-blind packages
+ * and no hooks. A project declares what it has - its own dev servers, its blind packages,
+ * its hooks - and overrides only the gate values that differ. Boardbash's own config is
+ * `examples/boardbash/runner.json`.
  *
  * Resolution is strict rather than forgiving. This file is read at the start of an
  * unattended overnight run; a typo silently ignored here surfaces eight hours later as a
@@ -54,34 +55,13 @@ export const DEFAULT_CONFIG = Object.freeze({
     /** The tsc/eslint count ratchet. Off means no counts are taken at all. */
     quality: Object.freeze({ enabled: true, timeoutMinutes: 15 }),
   }),
-  // Boardbash's own two servers, kept as the default so a config-less run behaves exactly
-  // as before the extraction. Once Boardbash carries its own runner.json this default is
-  // planned to become the empty table.
-  devServers: Object.freeze([
-    Object.freeze({
-      name: 'backend',
-      url: 'http://127.0.0.1:3005/',
-      packageDir: 'packages/backend',
-      npmScript: 'dev',
-      startTimeoutSeconds: 180,
-      readyWhen: 'any-response',
-      readiness: 'any HTTP status (no health route; a 404 at / is a live server)',
-    }),
-    Object.freeze({
-      name: 'frontend',
-      url: 'http://127.0.0.1:1701/boardbash/',
-      packageDir: 'packages/frontend-boardfest',
-      npmScript: 'start',
-      startTimeoutSeconds: 420,
-      readyWhen: 'http-200',
-      readiness: 'HTTP 200 (Parcel answers before its first build is done)',
-    }),
-  ]),
+  /** The app the runner brings up for a batch; none means plans verify in the test harness. */
+  devServers: Object.freeze([]),
   /**
    * Workspace packages the frontend bundler compiles in but never watches, so a merge
    * touching one silently stales the served bundle until the frontend server restarts.
    */
-  watcherBlindPackages: Object.freeze(['shared', 'frontend-shared']),
+  watcherBlindPackages: Object.freeze([]),
   /**
    * Commands the runner calls at defined moments, each off (null) unless the project names
    * one. A command is a list: the program first - a PATH name or a repo-relative path - then
@@ -94,7 +74,8 @@ export const DEFAULT_CONFIG = Object.freeze({
     /** `post|clear --plan <path> [--version <v>]` -> JSON `{posted, shots, issue}`. */
     demo: null,
     /**
-     * `{ command, perPlanPlatform, perBatchPlatform }`. `tag --platform <p> --log-file <f>`
+     * `{ command, perPlanPlatform, perBatchPlatform }`; `perPlanPlatform` is required,
+     * `perBatchPlatform` defaults to null (no batch tag). `tag --platform <p> --log-file <f>`
      * -> `{tag, version, actionsUrl}`; `status --tag <t> [--fallback-url <u>]` ->
      * `{finished, outcome, url}`.
      */
@@ -105,9 +86,10 @@ export const DEFAULT_CONFIG = Object.freeze({
 const COMMAND_HOOKS = Object.freeze(['siblingsAfter', 'demo'])
 
 const RELEASE_HOOK_DEFAULTS = Object.freeze({
-  perPlanPlatform: 'web',
-  perBatchPlatform: 'android',
+  perBatchPlatform: null,
 })
+
+const RELEASE_HOOK_KEYS = Object.freeze(['command', 'perPlanPlatform', ...Object.keys(RELEASE_HOOK_DEFAULTS)])
 
 /** The probe predicate a resolved server's `readyWhen` stands for. */
 export function readinessOf(server) {
@@ -179,13 +161,13 @@ function resolveCommandHook(name, value) {
 function resolveReleaseHook(value) {
   if (value === null || value === undefined) return null
   assertPlainObject(value, 'hooks.release')
-  assertKnownKeys(value, ['command', ...Object.keys(RELEASE_HOOK_DEFAULTS)], (key) => `unknown key '${key}' in hooks.release`)
+  assertKnownKeys(value, RELEASE_HOOK_KEYS, (key) => `unknown key '${key}' in hooks.release`)
   if (!isCommand(value.command)) fail('hooks.release.command must be a non-empty list of strings')
+  if (typeof value.perPlanPlatform !== 'string' || value.perPlanPlatform === '') {
+    fail('hooks.release.perPlanPlatform is required: the platform name each verified plan is tagged for')
+  }
 
   const release = { ...RELEASE_HOOK_DEFAULTS, ...value, command: [...value.command] }
-  if (typeof release.perPlanPlatform !== 'string' || release.perPlanPlatform === '') {
-    fail('hooks.release.perPlanPlatform must be a platform name')
-  }
   if (release.perBatchPlatform !== null && typeof release.perBatchPlatform !== 'string') {
     fail('hooks.release.perBatchPlatform must be a platform name or null')
   }
