@@ -16,14 +16,14 @@
     baseline, which is the set every plan inherits by branching off that base.
     Skip it with -SkipPreflight.
 
-    Just before that sweep - so Parcel's cold build happens underneath it rather than on the
-    first plan's clock - it brings up the app the plans check their work against: the backend
-    on :3005 and the frontend dev server on :1701, held up for the whole batch. A server
-    already listening is adopted and left running at the end; only what this run started does
-    it stop, and only that frontend does it restart after a plan changes a package Parcel's
-    watcher cannot see. A server that never answers does not stop the queue - each plan is
-    told the live app is unavailable and falls back to the Playwright harness. Skip the whole
-    arrangement with -SkipDevServers.
+    Just before that sweep - so a cold build happens underneath it rather than on the first
+    plan's clock - it brings up the app the plans check their work against: the dev servers
+    plans/runner.json declares, held up for the whole batch. A server already listening is
+    adopted and left running at the end; only what this run started does it stop, and only
+    the frontend does it restart after a plan changes a package the bundler's watcher cannot
+    see (watcherBlindPackages). A server that never answers does not stop the queue - each
+    plan is told the live app is unavailable and falls back to the visual harness. A project
+    declaring no servers gets the same. Skip the whole arrangement with -SkipDevServers.
 
     Then, for each plan file (plans/NN-title.md, sorted by number):
       1. branches off the current branch - `plan/NN-title` - so nothing is implemented
