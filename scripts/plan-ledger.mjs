@@ -1,7 +1,7 @@
 // Which plans the queue is finished with - from both records of it, not just the local one.
 //
 // `plans/.state.json` is gitignored, so it never leaves the machine that wrote it. Stand a
-// second runner up with a plain clone (scripts/vm/provision-runner-guest.ps1 does exactly
+// second runner up with a plain clone (C:/code/runner-vm/provision-runner-guest.ps1 does exactly
 // that) and it starts with an empty ledger: every plan file on disk reads as unfinished and
 // the queue sets about re-implementing years of shipped work.
 //

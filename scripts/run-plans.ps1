@@ -158,7 +158,16 @@ param(
     [switch] $KeepPlanBranches,
 
     # Hard wall-clock limit for the one session that gets to resolve a rebase conflict.
-    [int] $ConflictTimeoutMinutes = 20
+    [int] $ConflictTimeoutMinutes = 20,
+
+    # Fail a plan the moment a gate goes red, instead of giving it one repair session.
+    # See Invoke-PlanRepair for what that session is and is not allowed to do.
+    [switch] $NoRepair,
+
+    # Hard wall-clock limit for the one session that gets to repair a failed gate. Larger than
+    # the conflict budget because a visual red is only proved fixed by the full sweep, and that
+    # is five minutes of it.
+    [int] $RepairTimeoutMinutes = 45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -946,10 +955,10 @@ function Get-AppStatusLine {
     }
 
     return @"
-- The live app is NOT available this run. Do not try to start the dev servers or to launch a
-  test player; verify user-visible work in the Playwright harness (``npm run $visualScript``),
-  which needs neither server, and say in your report that the live app was unavailable.
-  Reason: $Reason
+- The live app is NOT available this run. Do not try to start any dev server or browser session
+  against it; verify user-visible work the way the project section describes - in the visual
+  harness (``npm run $visualScript``) where a package defines one, which needs no server - and say
+  in your report that the live app was unavailable. Reason: $Reason
 "@
 }
 
@@ -2686,6 +2695,180 @@ function Get-PlanIntegration {
 
 <#
 .SYNOPSIS
+    The bridge to scripts/plan-repair.mjs, where the repair rules are decided and tested.
+#>
+function Invoke-RepairCli {
+    param([string] $RepoRoot, [string[]] $CliArgs)
+
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        $code = Invoke-CapturedProcess -FilePath 'node' `
+            -Arguments (@((Join-Path $PSScriptRoot 'plan-repair-cli.mjs')) + $CliArgs) `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+
+        if ($code -ne 0) {
+            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
+            throw "plan-repair-cli $($CliArgs[0]) failed (exit $code): $reason"
+        }
+        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
+<#
+.SYNOPSIS
+    The prompt the one repair session gets.
+.DESCRIPTION
+    No backticks and no bare dollar signs anywhere in the body except the ones interpolated on
+    purpose. This is a double-quoted here-string: a backtick is PowerShell's escape character
+    and would be eaten silently, and any other "dollar-word" would expand to an empty variable.
+#>
+function New-RepairPrompt {
+    param([string] $Branch, [string] $PlanName, [string[]] $Problems)
+
+    $gates = (($Problems | ForEach-Object { "  - $_" }) -join "`n")
+    $visualScript = $script:Config.gates.visual.script
+    return @"
+You are the plan runner's repair pass, running unattended. Nobody is watching, there is nobody
+to ask, and this is the only attempt.
+
+The plan '$PlanName' finished and committed its work to the branch '$Branch'. Its own tests
+passed. Then the runner ran the full gates over that commit, and these went red:
+
+$gates
+
+They are almost always specs the plan never thought to run - a shared surface it changed that
+some other spec also renders. Fix the cause:
+
+1. Read the log each problem above names. It holds the failing test ids and the assertion.
+2. Run that gate yourself to see the failure first hand. For a visual red that is
+   "npm run $visualScript -- <the spec file>" in the package directory.
+3. Fix the cause in the code, then re-run. For a visual red, finish with the whole sweep -
+   "npm run $visualScript" - because the fix can move a third spec you have not looked at.
+4. Commit on this branch. A second commit is expected here; say in its message what it repairs.
+5. Append a "Repair" section to this plan's report under plans/reports/ saying what was red,
+   what you changed and why. Commit that with the fix.
+
+Hard rules:
+
+- Never re-record a snapshot. Every file under a "__snapshots__" directory is off limits, and
+  the runner checks afterwards and fails the plan if you touched one. The plan's own session
+  already re-recorded the baselines it meant to move, so a red found after it finished is one
+  the plan did not intend - re-recording it would bake in whatever actually broke.
+- Never delete, skip, weaken or narrow a test or an assertion to get a gate green. If a test
+  encodes an invariant your plan genuinely and deliberately changed, that is a judgement for a
+  person: stop, and say so.
+- Stay inside what this plan changed. This is not the moment for unrelated work.
+- Do not push, do not tag, do not switch branches, do not touch another plan's files, and do
+  not add or edit anything under plans/ except this plan's own report.
+
+If the fix is not clear, or it means guessing at what somebody intended, or the only way to
+green is to undo what the plan set out to do - stop and change nothing. A plan reported as
+failed is a good outcome; a plan made green by hiding the failure is not.
+
+The runner re-runs every gate afterwards and checks the repository itself, so say only what
+you actually did. End your final message with one line, exactly: REPAIRED or REPAIR_BLOCKED.
+"@
+}
+
+<#
+.SYNOPSIS
+    What the repository says the repair session did - never what the session claimed.
+.DESCRIPTION
+    Two questions before the gates are worth re-running: did it change anything at all, and did
+    it stay off the snapshots. The second is the one that matters. Re-recording a baseline turns
+    any visual red green while hiding what moved, it is the cheapest wrong answer available to a
+    session under pressure to produce one, and section 4 of the spine forbids it for exactly
+    this reason. A repair that reaches for it is failed here rather than merged.
+#>
+function Test-RepairedBranch {
+    param([string] $RepoRoot, [string] $Commit, [string] $LogFile)
+
+    $headNow = Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')
+    if ($headNow -eq $Commit) {
+        return @("the repair session committed nothing - see $LogFile")
+    }
+
+    $audit = Invoke-RepairCli -RepoRoot $RepoRoot -CliArgs @('audit', '--since', $Commit)
+    $forbidden = @($audit.forbidden)
+    if ($forbidden.Count -gt 0) {
+        return @("the repair session re-recorded $($forbidden.Count) snapshot(s) instead of fixing the cause: " +
+                 (($forbidden | Select-Object -First 5) -join ', ') + " - see $LogFile")
+    }
+    return @()
+}
+
+<#
+.SYNOPSIS
+    Gives one scoped session the chance to fix a gate it turned red, and checks its work.
+.DESCRIPTION
+    Why this exists at all: of the three plans that had ever failed in the queue this was
+    written for, two failed on a visual spec they never ran, and both were a quarter of an hour
+    of good work thrown away over a fault of a line or two. The runner caught them correctly;
+    it simply had nobody left to tell.
+
+    Narrow on purpose, and it fails closed at every step. It runs only when *every* problem is a
+    gate a session can act on (scripts/plan-repair.mjs decides that, and is tested there), only
+    when the plan actually committed, only once, and never when the plan's own session did not
+    exit cleanly. Afterwards the whole verdict is taken again rather than just the gate that was
+    red - a repair is a new tree, and nothing reaches the base branch on the strength of a gate
+    that was not re-run against it.
+#>
+function Invoke-PlanRepair {
+    param([string] $RepoRoot, [string] $Branch, [string] $PlanName, [string[]] $Problems,
+          [string] $Commit, [string] $HeadBefore, [string] $LogDir, [string] $Slug,
+          [string] $Stamp, [string[]] $PendingScripts = @())
+
+    $unrepaired = [pscustomobject]@{ repaired = $false; commit = $Commit; problems = @($Problems) }
+    if ($NoRepair) { return $unrepaired }
+
+    $problemsFile = New-TempPath '.problems.json'
+    try {
+        # -InputObject, not the pipeline. Piping a one-item array to ConvertTo-Json on 5.1 gives
+        # a bare string rather than an array, and the usual unary-comma guard against that gives
+        # {"value":[...],"Count":n} - an object. Only this form yields a plain array either way.
+        (ConvertTo-Json -InputObject @($Problems) -Depth 3) | Set-Content -Path $problemsFile -Encoding UTF8
+        $assessment = Invoke-RepairCli -RepoRoot $RepoRoot -CliArgs @('assess', '--problems-file', $problemsFile)
+    }
+    finally { Remove-Item -Path $problemsFile -Force -ErrorAction SilentlyContinue }
+
+    if (-not $assessment.repairable) { return $unrepaired }
+
+    Write-Host "  !! $($Problems.Count) gate(s) red - one session gets to repair it:" -ForegroundColor Yellow
+    foreach ($problem in $Problems) { Write-Host "       $problem" -ForegroundColor Yellow }
+
+    $promptFile = Join-Path $LogDir "$Slug.repair.$Stamp.prompt.txt"
+    Set-Content -Path $promptFile -Encoding UTF8 `
+        -Value (New-RepairPrompt -Branch $Branch -PlanName $PlanName -Problems $Problems)
+    $logFile = Join-Path $LogDir "$Slug.repair.$Stamp.jsonl"
+
+    $code = Invoke-ClaudeOnPlan -PromptFile $promptFile -LogFile $logFile `
+        -ErrorFile "$logFile.stderr.txt" -WorkingDirectory $RepoRoot `
+        -SessionTimeoutMinutes $RepairTimeoutMinutes
+    if ($code -ne 0) { Write-Host "     repairer exited $code" -ForegroundColor Yellow }
+
+    $refused = @(Test-RepairedBranch -RepoRoot $RepoRoot -Commit $Commit -LogFile $logFile)
+    if ($refused.Count -gt 0) { return [pscustomobject]@{ repaired = $false; commit = $Commit; problems = $refused } }
+
+    Write-Host "  ++ the repair committed - taking the whole verdict again" -ForegroundColor DarkCyan
+    $verdict = Get-PlanVerdict -HeadBefore $HeadBefore -RepoRoot $RepoRoot -LogDir $LogDir `
+        -Slug $Slug -Stamp "$Stamp-repair" -PlanName $PlanName -PendingScripts $PendingScripts
+    $after = @($verdict.problems)
+    if ($after.Count -gt 0) {
+        return [pscustomobject]@{
+            repaired = $false
+            commit   = $verdict.commit
+            problems = @("the repair session did not settle it - see $logFile") + $after
+        }
+    }
+
+    Write-Host "  ++ repaired - every gate green" -ForegroundColor Green
+    return [pscustomobject]@{ repaired = $true; commit = $verdict.commit; problems = @() }
+}
+
+<#
+.SYNOPSIS
     The whole life of one plan: its branch, its session, its verification, its merge.
 .DESCRIPTION
     Nothing here throws. Every fault becomes an entry in .problems, so a plan that cannot be
@@ -2726,6 +2909,19 @@ function Invoke-PlanOnBranch {
     $run.commit = $verdict.commit
     $problems = @($verdict.problems)
     if ($exitCode -ne 0) { $problems = @("claude exited with code $exitCode") + $problems }
+
+    # A red gate is not the end of the plan yet. Anything that is not a gate - no commit, a
+    # dirty tree, a session that did not exit cleanly - is still in $problems here, and makes
+    # the assessment inside refuse, so this is a no-op for every failure except the one it is
+    # for. See Invoke-PlanRepair.
+    if ($problems.Count -gt 0 -and $run.commit) {
+        $repair = Invoke-PlanRepair -RepoRoot $RepoRoot -Branch $run.branch -PlanName $Plan.Name `
+            -Problems $problems -Commit $run.commit -HeadBefore $headBefore -LogDir $LogDir `
+            -Slug $Slug -Stamp $Stamp -PendingScripts $pendingScripts
+        $run.commit = $repair.commit
+        $problems = @($repair.problems)
+    }
+
     if ($problems.Count -gt 0) {
         $run.problems = $problems
         return [pscustomobject]$run

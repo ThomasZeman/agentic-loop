@@ -16,6 +16,7 @@ import {spawnSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import {fileURLToPath} from 'node:url';
 
 const TOOL_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_BUFFER = 64 * 1024 * 1024;
@@ -59,14 +60,24 @@ function countTscErrors(pkgDir, notes) {
     return matches === null ? 0 : matches.length;
 }
 
-function hasEslintConfig(pkgDir) {
-    return ['eslint.config.mjs', 'eslint.config.js', 'eslint.config.cjs']
-        .some((name) => existsSync(path.join(pkgDir, name)));
+/**
+ * Both config spellings count. Flat config is eslint 9's, but the frontend packages pin
+ * eslint 8 of their own and configure it the eslintrc way - and eslint resolves from the
+ * package dir upwards, so those get their local 8 and read the .eslintrc.* beside it. A
+ * flat-only check called those packages unlintable and skipped the gate for the ones most
+ * plans touch, silently, for as long as the ratchet has existed.
+ */
+export function hasEslintConfig(pkgDir) {
+    const names = [
+        'eslint.config.mjs', 'eslint.config.js', 'eslint.config.cjs',
+        '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.yaml', '.eslintrc.yml', '.eslintrc.json', '.eslintrc',
+    ];
+    return names.some((name) => existsSync(path.join(pkgDir, name)));
 }
 
 function countLintProblems(pkgDir, notes) {
     if (!hasEslintConfig(pkgDir) || !existsSync(path.join(pkgDir, 'src'))) {
-        notes.push('lint: no flat eslint config or no src/, skipped');
+        notes.push('lint: no eslint config or no src/, skipped');
         return null;
     }
     const eslintJs = findUp(pkgDir, path.join('node_modules', 'eslint', 'bin', 'eslint.js'));
@@ -88,16 +99,22 @@ function countLintProblems(pkgDir, notes) {
     }
 }
 
-const pkgDir = process.argv[2];
-if (!pkgDir || !existsSync(pkgDir)) {
-    console.error('usage: node quality-counts.mjs <package-dir>');
-    process.exit(2);
+function main() {
+    const pkgDir = process.argv[2];
+    if (!pkgDir || !existsSync(pkgDir)) {
+        console.error('usage: node quality-counts.mjs <package-dir>');
+        process.exit(2);
+    }
+
+    const notes = [];
+    const counts = {
+        tsc: countTscErrors(pkgDir, notes),
+        lint: countLintProblems(pkgDir, notes),
+        notes,
+    };
+    console.log(JSON.stringify(counts));
 }
 
-const notes = [];
-const counts = {
-    tsc: countTscErrors(pkgDir, notes),
-    lint: countLintProblems(pkgDir, notes),
-    notes,
-};
-console.log(JSON.stringify(counts));
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+    main();
+}

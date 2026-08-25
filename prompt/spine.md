@@ -96,6 +96,13 @@ sweep *containing one of your specs* is your problem. Do **not** "fix" an inheri
 re-recording its baseline inside an unrelated plan; re-record only what your own change genuinely
 moves.
 
+**"One of your specs" is not "a spec file you edited."** A spec's filename does not tell you which
+screens it mounts, and cross-cutting specs measure rhythm, fit and contrast on surfaces they are not
+named after. So: **if you touched anything a screen renders, run the whole sweep** before you commit,
+not just the spec that covers the thing you built. A gate that goes red after you finish buys one
+scoped repair session at most, and that session may not re-record a snapshot — so the sweep is far
+cheaper run by you, now.
+
 ### Driving the live app
 
 The trailer at the end of this prompt says whether a live app is running for this batch, and at
@@ -168,15 +175,19 @@ and fails the plan. Anything you touch, you commit.
 
 - **Never `git add -A`, `git add .`, or `git add plans/`.** The plans queued behind you are sitting
   there untracked, and a blanket add sweeps them into your commit. Name every path you stage.
-- Any scratch file — a throwaway script, a scratch note, a captured log — goes **outside the repo**,
-  in the system temp directory. Never in the working tree.
+- Any scratch file — a throwaway script, a scratch note, a captured log, a "before" copy of a
+  baseline image — goes in **`plans/.scratch/`**. Not in the system temp directory: the sandbox
+  only permits writing and deleting under the repo root, so `$env:TEMP`, `/tmp` and everywhere
+  else on the disk come back **denied**, and the turn is wasted. `plans/.scratch/` is gitignored,
+  so nothing you put there reaches `git status --porcelain` or a commit.
 - If you created something inside the repo that should not be committed, delete it before you finish.
 - Run `git status --porcelain` as your last action and confirm the only thing left is other plan
   files. Anything else: commit it if it belongs to the change, delete it if it does not.
 
-The only exceptions are `plans/logs/`, `plans/.state.json`, the runner's other gitignored files
-under `plans/`, and any staging directory the project section names. They are gitignored and owned
-by the runner — leave them alone.
+The only exceptions are `plans/logs/`, `plans/.state.json`, `plans/.scratch/`, the runner's other
+gitignored files under `plans/`, and any staging directory the project section names. All of them
+are gitignored, so none can dirty the tree — the bullet above about deleting what you created does
+not reach into them. Leave `plans/logs/` and `plans/.state.json` alone; they are the runner's.
 
 ---
 

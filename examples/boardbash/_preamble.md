@@ -91,11 +91,15 @@ Then **`Read` the regenerated PNGs** under `tests/visual/__snapshots__/` and des
 
 Baselines have a 2% `maxDiffPixelRatio` tolerance, so a stale baseline can pass a real regression. When you intentionally change styling: delete the affected snapshot dir, re-run with `--update-snapshots`, then `Read` the new PNGs to confirm they are correct before committing them.
 
+Keeping the old PNG to compare against is worth doing — copy it to **`plans/.scratch/`** first, never to `$env:TEMP` or `/tmp`, which the sandbox refuses (§5).
+
 **The runner runs `test:visual` itself** after you commit, for every changed package that defines it. It does **not** fail you for a red suite — the suite carries a standing set of pre-existing reds. It fails you for a test that *you* turned red: it compares the set of failing test ids against `plans/.visual-baseline.json` and reports only the ones that are new, by name. Tests you fix are banked into the baseline immediately, so a later plan cannot re-break them.
 
 That baseline is measured once, by a pre-flight sweep of the base branch before the queue starts — so it is exactly the set your branch inherited, and the comparison is fair. It is not updated mid-run: fixing a visual test is welcome, but it stays in the baseline until the next run re-measures.
 
 So a red sweep is not automatically your problem — but a red sweep *containing one of your specs* is. Run it yourself first and compare against the list the runner will use; the specs are retried twice, so an order-dependent failure that passes on a retry counts as flaky, not failed.
+
+**"One of your specs" is not "a spec file you edited."** A spec's filename does not tell you which screens it mounts, and the cross-cutting ones — `dom-menu-tabs-rhythm`, `dom-nav-bar-fit`, `dom-rail-chip-fit`, `menu-ground-contrast` — measure rhythm, fit and contrast on surfaces they are not named after. Nothing you can read tells you which of the 1165 tests render what you changed. So: **if you touched anything a menu or a screen renders, run the whole sweep** — `npm run test:visual`, about five minutes — before you commit, not just the spec that covers the thing you built. Two of the three plans that have ever failed in this queue failed on a spec they never ran: 248 on `dom-welcome-name-screen`, 309 on `dom-menu-tabs-rhythm`. Both were a quarter of an hour of sound work lost to a fault of a line or two, found minutes too late.
 
 Do **not** "fix" an inherited red by re-recording its baseline inside an unrelated plan — that bakes in whatever actually moved. Re-record only the dirs your own change genuinely moves.
 
@@ -221,16 +225,22 @@ and fails the plan. Anything you touch, you commit.
 
 - **Never `git add -A`, `git add .`, or `git add plans/`.** The plans queued behind you are sitting
   there untracked, and a blanket add sweeps them into your commit. Name every path you stage.
-- Any scratch file — a throwaway script, a scratch note, a captured log — goes **outside the repo**,
-  in the system temp directory. Never in the working tree.
+- Any scratch file — a throwaway script, a scratch note, a captured log, a "before" copy of a
+  baseline PNG — goes in **`plans/.scratch/`**. Not in the system temp directory: the sandbox only
+  permits writing and deleting under the repo root, so `$env:TEMP`, `/tmp` and everywhere else on
+  the disk come back **denied**, and the turn is wasted. Every plan in the 306–312 run lost one
+  that way, thirteen denials between them, staging before-and-after screenshots. `plans/.scratch/`
+  is gitignored, so nothing you put there reaches `git status --porcelain` or a commit.
 - If you created something inside the repo that should not be committed, delete it before you finish.
 - Run `git status --porcelain` as your last action and confirm the only thing left is other plan
   files. Anything else: commit it if it belongs to the change, delete it if it does not.
 
-The only exceptions are `plans/logs/`, `plans/.state.json` and the `scripts/linear/.demo/`
-directory your showcase screenshots go in (§4). All three are gitignored and owned by the
-runner — leave them alone. Deleting your own demo directory on the way out is not tidying up;
-it is throwing away the pictures the runner is about to post.
+The only exceptions are `plans/logs/`, `plans/.state.json`, `plans/.scratch/` and the
+`scripts/linear/.demo/` directory your showcase screenshots go in (§4). All four are gitignored,
+so none of them can dirty the tree — the bullet above about deleting what you created does not
+reach into them. Leave `plans/logs/` and `plans/.state.json` alone; they are the runner's.
+Deleting your own demo directory on the way out is not tidying up; it is throwing away the
+pictures the runner is about to post.
 
 ---
 

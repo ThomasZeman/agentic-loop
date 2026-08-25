@@ -5,3 +5,4 @@ logs/
 .preflight-bank.json
 .plan-lock/
 .ticket-loop.lock
+.scratch/

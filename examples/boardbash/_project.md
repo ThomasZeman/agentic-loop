@@ -41,9 +41,17 @@ Baselines have a 2% `maxDiffPixelRatio` tolerance, so a stale baseline can pass 
 regression. When you intentionally change styling: delete the affected snapshot dir, re-run with
 `--update-snapshots`, then `Read` the new PNGs to confirm they are correct before committing them.
 
+Keeping the old PNG to compare against is worth doing — copy it to `plans/.scratch/` first, never
+to `$env:TEMP` or `/tmp`, which the sandbox refuses.
+
 The runner's visual ratchet retries specs twice, so an order-dependent failure that passes on a
 retry counts as flaky, not failed. Run the sweep yourself first and compare against the list the
-runner will use.
+runner will use. The cross-cutting specs here — `dom-menu-tabs-rhythm`, `dom-nav-bar-fit`,
+`dom-rail-chip-fit`, `menu-ground-contrast` — measure surfaces they are not named after, and nothing
+you can read tells you which of the ~1165 tests render what you changed: if you touched anything a
+menu or a screen renders, run the whole `npm run test:visual` (about five minutes) before you commit.
+Two of the three plans that have ever failed in this queue failed on a spec they never ran (248 on
+`dom-welcome-name-screen`, 309 on `dom-menu-tabs-rhythm`).
 
 ## Driving the live app
 
