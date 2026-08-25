@@ -1,0 +1,10 @@
+{
+  "name": "agentic-loop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Unattended plan runner: executes numbered plan files through Claude Code, one branch per plan, verifying each before integrating it.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"scripts/*.test.mjs\""
+  }
+}

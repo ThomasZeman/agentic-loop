@@ -1,0 +1,7 @@
+logs/
+.state.json
+.quality-baseline.json
+.visual-baseline.json
+.preflight-bank.json
+.plan-lock/
+.ticket-loop.lock

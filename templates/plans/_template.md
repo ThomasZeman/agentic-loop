@@ -1,0 +1,74 @@
+---
+effort: high   # low | medium | high | xhigh | max — how hard this plan's session should think
+---
+
+# <Title — what the user gets, not how it is built>
+
+## Goal
+
+<One paragraph. The observable outcome. Written so "done" is unambiguous.>
+
+## Context
+
+<Where this lives. Name the concrete files and symbols you already know are involved —
+this is the single biggest lever on plan quality. Link co-located `.md` design notes.>
+
+- `packages/frontend-boardfest/src/...`
+- `packages/backend/src/...`
+
+## Scope
+
+**In:**
+- <bullet>
+
+**Out:**
+- <bullet — be explicit; this is what keeps the agent from wandering>
+
+## Acceptance criteria
+
+<Each one phrased as something a test can assert.>
+
+1. Given <state>, when <action>, then <observable result>.
+2. ...
+
+## Tests to write first
+
+- `path/to/thing.test.ts` — <what it pins down>
+
+## Browser check
+
+<What to render and look at, and how. Usually a `test:visual` spec + which snapshots to read.
+Write "n/a — <reason>" for non-visual work.>
+
+## Demo shots
+
+<Two to four things worth photographing for the ticket, in the order they should be read,
+each with the caption it should carry. The runner posts them once this plan verifies and
+merges. Write "n/a — <reason>" when the change is not one anybody can look at.>
+
+## Notes / constraints
+
+<Anything the agent cannot infer: perf budgets, back-compat, wire-format stability,
+"do not touch X", known-flaky suites.>
+
+---
+
+<!--
+Picking the effort. Every plan runs on Opus; this only says how hard to think, and the
+runner passes it to `claude --effort`. Choose by what the *plan* had to leave open, not by
+how much it matters:
+
+  low     Mechanical and local. A string, a constant, a rename the compiler catches.
+          No design decision left in it, and the test to write is obvious.
+  medium  One package, an existing pattern to copy, and acceptance criteria that map
+          one-to-one onto tests this plan can already name.
+  high    The default, and most plans. Several files or packages, a new abstraction or a
+          shared type, tests that still need designing, or an approach this plan had to
+          argue for.
+  xhigh   Genuinely hard: concurrency or ordering, a migration or wire-format change, a
+          bug with no known repro, criteria you could only phrase approximately.
+  max     Reserve for work you expect to fail at xhigh. Rare, and slow.
+
+Omitting the header is the same as `high`. Misspelling a level fails the plan before its
+session starts - the CLI would otherwise ignore it and run at its own default.
+-->
