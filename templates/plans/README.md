@@ -4,7 +4,8 @@ A queue of numbered plan files, executed one at a time by Claude Code, unattende
 
 ```
 plans/
-  _preamble.md          standing instructions prepended to every plan (TDD, gates, commit rules)
+  _project.md           this project's rules, appended to the runner's standing instructions
+  runner.json           this project's runner config (workspace dir, gates, dev servers, hooks)
   _template.md          skeleton for a new plan
   00-first-thing.md     the queue — run in filename order
   01-next-thing.md

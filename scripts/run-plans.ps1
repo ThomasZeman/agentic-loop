@@ -344,6 +344,30 @@ function Get-RunnerConfig {
     finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
 }
 
+<#
+.SYNOPSIS
+    The standing instructions prepended to every plan's prompt, composed by
+    scripts/preamble-cli.mjs, and a label saying what they were composed from.
+#>
+function Get-Preamble {
+    param([string] $RepoRoot)
+
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        $code = Invoke-CapturedProcess -FilePath 'node' `
+            -Arguments @((Join-Path $PSScriptRoot 'preamble-cli.mjs')) `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+
+        if ($code -ne 0) {
+            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
+            throw "preamble-cli failed (exit $code): $reason"
+        }
+        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
 # --------------------------------------------------------------------------
 # Hooks -- the target project's own scripts, run at the moments runner.json names
 # --------------------------------------------------------------------------
@@ -3082,9 +3106,15 @@ if ($PlansDir.StartsWith($repoRoot, [StringComparison]::OrdinalIgnoreCase)) {
     $script:PlansRel = ($PlansDir.Substring($repoRoot.Length).TrimStart('\', '/') -replace '\\', '/')
 }
 
-$preamblePath = Join-Path $PlansDir '_preamble.md'
-if (-not (Test-Path $preamblePath)) { throw "Missing shared preamble: $preamblePath" }
-$preamble = Get-Content -Path $preamblePath -Raw -Encoding UTF8
+# The standing instructions: the tool's spine plus this project's plans/_project.md, or the
+# project's own plans/_preamble.md whole where it still has one. Composed once per run in
+# scripts/preamble.mjs, where the rules are tested; a fault stops the run before any plan
+# inherits a prompt composed wrong.
+$composed = Get-Preamble -RepoRoot $repoRoot
+$preamble = $composed.text
+if ($composed.source -ne 'plans/_preamble.md') {
+    Write-Host "Preamble: $($composed.source)" -ForegroundColor DarkGray
+}
 
 $logDir    = Join-Path $PlansDir 'logs'
 $reportDir = Join-Path $PlansDir 'reports'

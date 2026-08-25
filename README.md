@@ -22,10 +22,30 @@ pwsh C:\code\agentic-loop\scripts\run-plans.ps1 -DryRun
 
 The target repo needs a `plans/` directory. Seed it from `templates/plans/`:
 
-- `_preamble.md` — the standing instructions prepended to every plan's prompt (required)
+- `_project.md` — this project's own rules, appended to the runner's standing instructions
+  (see below)
+- `runner.json` — the runner's per-project config (see below); optional
 - `_template.md` — the skeleton new plans are drafted against
 - `.gitignore` — keeps the runner's state, logs, and baselines out of the repo
 - `README.md` — the plans-directory contract, for humans and for planning agents
+
+## The prompt: spine + project section
+
+Every plan's prompt opens with standing instructions. They come in two parts:
+
+- **The spine**, `prompt/spine.md`, shipped with the tool — TDD, staying in scope, the gates
+  the runner itself enforces (named from `runner.json`, so prompt and verification cannot
+  disagree), the browser rule, the commit authorization, the blocked protocol, the report
+  format, the definition of done.
+- **The project section**, `plans/_project.md` in the target repo — what only that project's
+  owner can say: what to read first, the exact gate commands, how its visual harness and live
+  app are driven, how to stage a showcase, what is off limits. Appended after the spine under
+  a `# Project section` heading; it binds as much as the spine and wins where they conflict.
+
+A repo that still carries a whole `plans/_preamble.md` gets it used verbatim and the spine is
+not consulted — the old single-file layout keeps running unchanged until the project splits
+its own. `examples/boardbash/_project.md` is Boardbash's section, carved out of its former
+preamble (kept at `examples/boardbash/_preamble.md` for reference).
 
 `templates/skills/` holds the `run-plans` and `add-plan` Claude Code skills to copy into a
 project's `.claude/skills/` and adapt.
@@ -111,8 +131,7 @@ tool.
 
 ## Still Boardbash-shaped (later phases)
 
-- The copied `templates/plans/_preamble.md` and skills are Boardbash's own; they need
-  per-project rewrites until the planned spine/include split lands.
+- The two skills under `templates/skills/` are Boardbash's own and need per-project rewrites.
 - The default `devServers` table is still Boardbash's pair; it flips to `[]` once
   Boardbash carries its own `runner.json`.
 

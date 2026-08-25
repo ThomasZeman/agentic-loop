@@ -13,8 +13,8 @@ effort: high   # low | medium | high | xhigh | max — how hard this plan's sess
 <Where this lives. Name the concrete files and symbols you already know are involved —
 this is the single biggest lever on plan quality. Link co-located `.md` design notes.>
 
-- `packages/frontend-boardfest/src/...`
-- `packages/backend/src/...`
+- `<package>/src/...`
+- `<package>/src/...`
 
 ## Scope
 
@@ -37,14 +37,16 @@ this is the single biggest lever on plan quality. Link co-located `.md` design n
 
 ## Browser check
 
-<What to render and look at, and how. Usually a `test:visual` spec + which snapshots to read.
-Write "n/a — <reason>" for non-visual work.>
+<What to render and look at, and how. Usually a spec in the project's visual harness + which
+snapshots to read. Write "n/a — <reason>" for non-visual work.>
 
 ## Demo shots
 
-<Two to four things worth photographing for the ticket, in the order they should be read,
-each with the caption it should carry. The runner posts them once this plan verifies and
-merges. Write "n/a — <reason>" when the change is not one anybody can look at.>
+<Only for a project with a demo hook (see "Showcase" in `plans/_project.md`). Two to four
+things worth photographing, in the order they should be read, each with the caption it should
+carry. The runner hands them over once this plan verifies and merges. Write "n/a — <reason>"
+when the change is not one anybody can look at; delete this section in a project without the
+hook.>
 
 ## Notes / constraints
 
