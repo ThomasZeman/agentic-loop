@@ -1,6 +1,7 @@
 # agentic-loop
 
-The unattended plan runner, extracted from Boardbash so any repo in `C:\code` can use it.
+An unattended plan runner for Claude Code, shared across projects: clone it next to your
+repos and point each one at it.
 
 It executes numbered plan files (`plans/NN-title.md`) through Claude Code, one at a time:
 each plan gets its own branch and a fresh headless session, the runner verifies the outcome
@@ -42,13 +43,11 @@ Every plan's prompt opens with standing instructions. They come in two parts:
   app are driven, how to stage a showcase, what is off limits. Appended after the spine under
   a `# Project section` heading; it binds as much as the spine and wins where they conflict.
 
-A repo that still carries a whole `plans/_preamble.md` gets it used verbatim and the spine is
-not consulted — the old single-file layout keeps running unchanged until the project splits
-its own. `examples/boardbash/_project.md` is Boardbash's section, carved out of its former
-preamble (kept at `examples/boardbash/_preamble.md` for reference).
+A repo that carries a whole `plans/_preamble.md` instead gets it used verbatim and the spine is
+not consulted — for a project that wants to own the entire prompt.
 
-`templates/skills/` holds the `run-plans` and `add-plan` Claude Code skills to copy into a
-project's `.claude/skills/` and adapt.
+`templates/skills/` holds generic `run-plans` and `add-plan` Claude Code skills to copy into a
+project's `.claude/skills/` and fill in.
 
 ## Per-project configuration: `plans/runner.json`
 
@@ -103,8 +102,9 @@ stdout. A script file is never the program itself: spell a PowerShell hook as
 
 ```json
 "hooks": {
-  "siblingsAfter": ["node", "scripts/linear/plan-index-cli.mjs"],
-  "demo":          ["node", "scripts/linear/ticket-demo-cli.mjs"],
+  "siblingsAfter": ["node", "scripts/hooks/siblings-after.mjs"],
+  "demo":          ["node", "scripts/hooks/demo.mjs"],
+  "afterPlan":     ["node", "scripts/hooks/sweep.mjs"],
   "release": {
     "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", "scripts/release-hook.ps1"],
@@ -121,6 +121,7 @@ unless given.
 | --- | --- | --- | --- |
 | `siblingsAfter` | `--plans-dir <dir> --siblings-after <plan file>` | JSON list of plan file names | after a plan fails: those plans are recorded `skipped` and not run this batch (later parts of the same ticket) |
 | `demo` | `post --plan <path> [--version <v>]` / `clear --plan <path>` | `{posted, shots, issue}` / anything | after a plan merges (post) or fails (clear); never fails a plan |
+| `afterPlan` | `--plan <plan file>` | optional `{note}` | after every plan, whatever its outcome — the project's sweep of what a dead session may have left behind (a browser window, a device state); never fails a plan |
 | `release.command` | `tag --platform <p> --log-file <f>` | `{tag, version, actionsUrl}` — `tag: null` means nothing was pushed | under `-ReleaseEachPlan`, once per verified plan on `perPlanPlatform`, then once per batch on `perBatchPlatform` (`null` = no batch tag) |
 | `release.command` | `status --tag <t> [--fallback-url <u>]` | `{finished, outcome, url}` | under `-WaitForDeploy`, polled every 20 s until `finished` or `-DeployTimeoutMinutes` |
 
@@ -129,15 +130,9 @@ prints a line, a `tag` that pushes nothing disables releasing for the rest of th
 `-ReleaseEachPlan` without a release hook is refused at startup, as is a hook whose program
 cannot be found.
 
-`examples/boardbash/` holds Boardbash's complete `runner.json` (its two dev servers, its
-watcher-blind packages, its hooks) and its `release-hook.ps1` — the
-adapter that drives `scripts/tag-release.ps1` and reads GitHub Actions through `gh`, lifted
-out of the runner. Both are meant to be copied into the Boardbash repo when it adopts this
-tool.
-
-## Still Boardbash-shaped (later phases)
-
-- The two skills under `templates/skills/` are Boardbash's own and need per-project rewrites.
+The hooks are the project's own scripts and live in the project — the tool ships none. A
+typical release hook wraps whatever already cuts the project's tags and reads its CI's run
+state; a typical demo hook posts staged screenshots to the project's ticket system.
 
 ## Development
 

@@ -1,7 +1,7 @@
 // The naming and the reading of a plan's branch.
 //
 // Every plan is implemented on a branch of its own and fast-forwarded onto the base branch once
-// it verifies (R5.4). Nothing here touches git: this module answers what a branch should be
+// it verifies. Nothing here touches git: this module answers what a branch should be
 // called and what git's output means, so `run-plans.ps1` is left with the orchestration and
 // these decisions can be tested without a repository.
 

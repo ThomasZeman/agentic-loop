@@ -10,10 +10,10 @@ import { forbiddenRepairPaths, isRepairable, repairableProblems } from './plan-r
 
 const CLI = fileURLToPath(new URL('./plan-repair-cli.mjs', import.meta.url))
 
-const VISUAL_RED = "package 'frontend-boardfest' turned 3 visual test(s) red: DPR-1 | dom-menu-tabs-rhythm.test.ts | tournaments tab > the empty state keeps its status line one section gap below the create card - see C:\\code\\boardbash\\plans\\logs\\309.visual.txt"
-const SUITE_RED = "package 'backend' test suite is red (exit 1) - see C:\\code\\boardbash\\plans\\logs\\309.verify.txt"
-const LINT_ROSE = "package 'frontend-boardfest' lint count rose 122 -> 130 - see C:\\code\\boardbash\\plans\\logs\\309.quality.json"
-const TSC_ROSE = "package 'shared' tsc count rose 50 -> 51 - see C:\\code\\boardbash\\plans\\logs\\309.quality.json"
+const VISUAL_RED = "package 'web' turned 3 visual test(s) red: DPR-1 | settings-screen.test.ts | settings tab > the empty state keeps its status line one section gap below the header - see C:\\code\\acme\\plans\\logs\\42.visual.txt"
+const SUITE_RED = "package 'api' test suite is red (exit 1) - see C:\\code\\acme\\plans\\logs\\42.verify.txt"
+const LINT_ROSE = "package 'web' lint count rose 122 -> 130 - see C:\\code\\acme\\plans\\logs\\42.quality.json"
+const TSC_ROSE = "package 'core' tsc count rose 50 -> 51 - see C:\\code\\acme\\plans\\logs\\42.quality.json"
 
 /**
  * git with an identity and a signing setting of its own, so the test does not depend on
@@ -50,7 +50,7 @@ describe('repairableProblems', () => {
 
   test('a fault in the verification itself is not a gate a session can fix', () => {
     assert.deepEqual(repairableProblems(['verification failed to run: node is not on PATH']), [])
-    assert.deepEqual(repairableProblems(["package 'frontend-boardfest' visual suite: could not be measured - see log.txt"]), [])
+    assert.deepEqual(repairableProblems(["package 'web' visual suite: could not be measured - see log.txt"]), [])
   })
 
   test('a dirty tree is not repaired, because it says the plan itself went wrong', () => {
@@ -73,41 +73,41 @@ describe('isRepairable', () => {
 describe('forbiddenRepairPaths', () => {
   test('a re-recorded visual baseline is refused - the plan never intended that change', () => {
     const changed = [
-      'packages/frontend-boardfest/src/main-menu/tournaments-content.tsx',
-      'packages/frontend-boardfest/tests/visual/__snapshots__/dom-main-menu-screen.test.ts/DPR-2/main-menu-tournaments-empty.png',
+      'packages/web/src/settings/settings-content.tsx',
+      'packages/web/tests/visual/__snapshots__/settings-screen.test.ts/DPR-2/settings-empty.png',
     ]
 
     assert.deepEqual(forbiddenRepairPaths(changed), [
-      'packages/frontend-boardfest/tests/visual/__snapshots__/dom-main-menu-screen.test.ts/DPR-2/main-menu-tournaments-empty.png',
+      'packages/web/tests/visual/__snapshots__/settings-screen.test.ts/DPR-2/settings-empty.png',
     ])
   })
 
   test('a jest snapshot is refused on the same grounds', () => {
     assert.deepEqual(
-      forbiddenRepairPaths(['packages/backend/src/__snapshots__/codec.test.ts.snap']),
-      ['packages/backend/src/__snapshots__/codec.test.ts.snap'],
+      forbiddenRepairPaths(['packages/api/src/__snapshots__/codec.test.ts.snap']),
+      ['packages/api/src/__snapshots__/codec.test.ts.snap'],
     )
   })
 
   test('backslash paths are read the same way, because git is not the only thing that lists them', () => {
     assert.deepEqual(
-      forbiddenRepairPaths(['packages\\frontend-boardfest\\tests\\visual\\__snapshots__\\a\\b.png']),
-      ['packages\\frontend-boardfest\\tests\\visual\\__snapshots__\\a\\b.png'],
+      forbiddenRepairPaths(['packages\\web\\tests\\visual\\__snapshots__\\a\\b.png']),
+      ['packages\\web\\tests\\visual\\__snapshots__\\a\\b.png'],
     )
   })
 
   test('production code, tests and the report are all fair game', () => {
     const changed = [
-      'packages/frontend-boardfest/src/main-menu/tournaments-content.tsx',
-      'packages/frontend-boardfest/tests/visual/dom-menu-tabs-rhythm.test.ts',
-      'plans/reports/309-empty-cups-tab-explains-what-a-cup-is.md',
+      'packages/web/src/settings/settings-content.tsx',
+      'packages/web/tests/visual/settings-screen.test.ts',
+      'plans/reports/42-empty-settings-tab-explains-itself.md',
     ]
 
     assert.deepEqual(forbiddenRepairPaths(changed), [])
   })
 
   test('a file merely named like one is not mistaken for a snapshot directory', () => {
-    assert.deepEqual(forbiddenRepairPaths(['packages/backend/src/__snapshots__helper.ts']), [])
+    assert.deepEqual(forbiddenRepairPaths(['packages/api/src/__snapshots__helper.ts']), [])
   })
 })
 

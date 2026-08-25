@@ -3,7 +3,7 @@
 // The runner used to demand a spotless tree, so every plan file had to be committed before the
 // queue started — one bookkeeping commit per plan, separate from the work it describes. Now a
 // plan file rides in the commit of its own implementation, which means the queue's remaining
-// plan files are sitting untracked while earlier plans run (R5.3).
+// plan files are sitting untracked while earlier plans run.
 //
 // The line is drawn at `plans/` and `scripts/`. Everything under those is the runner's own
 // paperwork and the tooling that drives it — queued plans, half-written ones, reports from an
@@ -19,7 +19,7 @@
 // It stays narrow in two places, both about what a *finished* plan must have committed:
 //
 //   - `runningPlan` names the plan just executed, and that plan's own file and report must be
-//     *in* its commit. See R5.3 and the preamble's §5.
+//     *in* its commit, as the preamble requires.
 //   - `pendingScripts` lists the paths under `scripts/` that were already dirty when that plan
 //     started. Those keep riding along; anything else under `scripts/` is something the plan
 //     itself produced and did not commit, which is the failure the post-run check exists to

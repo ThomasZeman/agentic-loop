@@ -100,12 +100,18 @@ describe('resolveRunnerConfig', () => {
 
   test('every hook is off by default - a project opts in by naming a command', () => {
     const config = resolveRunnerConfig({})
-    assert.deepEqual(config.hooks, { siblingsAfter: null, demo: null, release: null })
+    assert.deepEqual(config.hooks, { siblingsAfter: null, demo: null, afterPlan: null, release: null })
+  })
+
+  test('the afterPlan hook is a plain command hook like the others', () => {
+    const config = resolveRunnerConfig({ hooks: { afterPlan: ['node', 'scripts/hooks/sweep.mjs'] } })
+    assert.deepEqual(config.hooks.afterPlan, ['node', 'scripts/hooks/sweep.mjs'])
+    assert.throws(() => resolveRunnerConfig({ hooks: { afterPlan: 'sweep' } }), /hooks\.afterPlan.*list/)
   })
 
   test('a command hook is a non-empty list of strings: program first, then its arguments', () => {
-    const config = resolveRunnerConfig({ hooks: { siblingsAfter: ['node', 'scripts/plan-index-cli.mjs'] } })
-    assert.deepEqual(config.hooks.siblingsAfter, ['node', 'scripts/plan-index-cli.mjs'])
+    const config = resolveRunnerConfig({ hooks: { siblingsAfter: ['node', 'scripts/siblings-after.mjs'] } })
+    assert.deepEqual(config.hooks.siblingsAfter, ['node', 'scripts/siblings-after.mjs'])
     assert.equal(config.hooks.demo, null)
   })
 

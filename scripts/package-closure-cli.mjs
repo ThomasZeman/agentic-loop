@@ -3,8 +3,8 @@
  * The bridge `run-plans.ps1` calls to turn what a plan's diff touched into what it has to be
  * verified against. It replies on stdout as JSON.
  *
- *   node package-closure-cli.mjs --changed frontend-shared
- *     -> {"packages":["frontend-boardfest","frontend-shared"]}
+ *   node package-closure-cli.mjs --changed ui
+ *     -> {"packages":["ui","web"]}
  *
  * The graph is read here from the manifests under `packages/` rather than passed in, for the same
  * reason plan-tree-cli.mjs reads the working tree itself: the caller knows what changed, not what

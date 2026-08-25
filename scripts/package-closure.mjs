@@ -1,10 +1,10 @@
 // Which workspace packages a change has to be verified against.
 //
 // The runner learns what a plan changed from a literal diff of `packages/<name>/` prefixes,
-// which is the truth about the diff and a lie about the blast radius: `frontend-boardfest` is
-// built on `frontend-shared`, which is built on `shared`, so a plan can break a consumer, verify
-// green against the one package it edited, merge and ship. Expanding that set is a decision, so
-// it lives here, tested, rather than in run-plans.ps1.
+// which is the truth about the diff and a lie about the blast radius: in a workspace where an
+// app package is built on a shared library, which is built on a core package, a plan can break
+// a consumer, verify green against the one package it edited, merge and ship. Expanding that
+// set is a decision, so it lives here, tested, rather than in run-plans.ps1.
 //
 // Two directions over the same graph, and the difference matters:
 //
@@ -15,7 +15,7 @@
 //
 // The graph comes from the manifests under `packages/`, never from a list written down here, so
 // a package added later is covered on the day it is added. The root manifest's `workspaces`
-// array is not that source: it names seven paths, four of which exist.
+// array is not that source: it is a list of globs, and may name paths that do not exist.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -66,8 +66,8 @@ export function readManifests(packagesDir) {
 /**
  * Every workspace package this one's build depends on, itself included, as directory names.
  *
- * Transitive, because frontend-boardfest reaches shared only through frontend-shared. Cycles and
- * the self-dependency `packages/shared` declares on itself are absorbed by the seen set.
+ * Transitive, because an app package may reach a core package only through a library in
+ * between. Cycles and a package's self-dependency are absorbed by the seen set.
  */
 export function dependencyClosure(manifest, byName) {
   const seen = new Set([manifest.directory])

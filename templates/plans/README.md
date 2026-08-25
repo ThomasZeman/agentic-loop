@@ -73,9 +73,9 @@ suite during its own verification, on its own branch — and that branch tip is 
 branch fast-forwards to when the plan merges. So the set is recorded at the merge, in
 `plans/.preflight-bank.json` (gitignored, runner-owned), and a batch whose base branch sits at the
 commit that record names reads it back instead of spending four more minutes deriving it again. The
-record names **one commit** and is trusted for that commit only: a plan that changed
-`frontend-boardfest`, `frontend-shared` or `shared` may only bank what its own sweep saw, anything
-else clears it, and the next pre-flight measures from scratch. `npm run test` is not part of this —
+record names **one commit** and is trusted for that commit only: a plan that changed a package
+with a visual suite, or one it is built on, may only bank what its own sweep saw, anything else
+clears it, and the next pre-flight measures from scratch. `npm run test` is not part of this —
 it runs for every package on every batch, and a red one still refuses the queue.
 
 1. **Branch** — `git checkout -b plan/<plan file>` off the branch you started the runner on. No plan

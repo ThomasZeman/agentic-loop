@@ -1,12 +1,11 @@
 // Which plans the queue is finished with - from both records of it, not just the local one.
 //
 // `plans/.state.json` is gitignored, so it never leaves the machine that wrote it. Stand a
-// second runner up with a plain clone (C:/code/runner-vm/provision-runner-guest.ps1 does exactly
-// that) and it starts with an empty ledger: every plan file on disk reads as unfinished and
-// the queue sets about re-implementing years of shipped work.
+// second runner up with a plain clone and it starts with an empty ledger: every plan file on
+// disk reads as unfinished and the queue sets about re-implementing years of shipped work.
 //
 // Git already holds the durable half of that record. A queued plan file is untracked - the
-// plan that implements it commits its own file, per the preamble's §5 - so a plan file that
+// plan that implements it commits its own file, as the preamble requires - so a plan file that
 // is *tracked* was committed by the plan that implemented it, and there is no other way for
 // it to have got there. That makes "tracked" a settled record every clone shares.
 //
@@ -53,7 +52,7 @@ function planNameOf(trackedPath) {
  * Every plan file git tracks, from a listing taken *inside* the plans directory.
  *
  * The same question `settledPlanNames` answers from the repo root, asked one path segment
- * further down: the ticket loop runs `git ls-files` with `-C <plans dir>`, so it never has to
+ * further down: a caller may run `git ls-files` with `-C <plans dir>`, so it never has to
  * know where in the repo that directory sits. Both callers share `isPlanFileName`, because two
  * ideas of what counts as a plan is how the two halves of this ledger drift apart.
  *

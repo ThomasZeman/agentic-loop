@@ -10,7 +10,7 @@ import {
 
 describe('planBranchName', () => {
   test('names the branch after the plan, without the extension', () => {
-    assert.equal(planBranchName('142-tournament-deadline.md'), 'plan/142-tournament-deadline')
+    assert.equal(planBranchName('142-signup-deadline.md'), 'plan/142-signup-deadline')
   })
 
   test('takes the prefix it is given, including none', () => {

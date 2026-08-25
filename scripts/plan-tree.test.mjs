@@ -36,11 +36,11 @@ describe('assessRunnerTree, before a plan starts', () => {
   test('one modified source file blocks, even beside a carried plan', () => {
     const assessment = assessRunnerTree([
       '?? plans/101-a-thing.md',
-      ' M packages/frontend-boardfest/src/app.ts',
+      ' M packages/web/src/app.ts',
     ])
 
     assert.equal(assessment.clean, false)
-    assert.deepEqual(assessment.blocking, ['packages/frontend-boardfest/src/app.ts'])
+    assert.deepEqual(assessment.blocking, ['packages/web/src/app.ts'])
     assert.deepEqual(assessment.carried, ['plans/101-a-thing.md'])
   })
 
@@ -80,7 +80,7 @@ describe('assessRunnerTree, before a plan starts', () => {
   })
 
   test('a new script nobody has committed yet is carried', () => {
-    assert.equal(assessRunnerTree(['?? scripts/linear/plan-index-cli.mjs']).clean, true)
+    assert.equal(assessRunnerTree(['?? scripts/hooks/siblings-after.mjs']).clean, true)
   })
 
   test('the match is anchored to the scripts directory too', () => {
@@ -196,9 +196,9 @@ describe('assessRunnerTree, when a plan has just run', () => {
   })
 
   test('a pending path listed the way Windows spells it still matches', () => {
-    const assessment = assessRunnerTree([' M scripts/linear/tick-planner.mjs'], {
+    const assessment = assessRunnerTree([' M scripts/hooks/demo.mjs'], {
       runningPlan: '100-done.md',
-      pendingScripts: ['scripts\\linear\\tick-planner.mjs'],
+      pendingScripts: ['scripts\\hooks\\demo.mjs'],
     })
 
     assert.equal(assessment.clean, true)

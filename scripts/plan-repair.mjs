@@ -1,11 +1,10 @@
 // Whether a failed plan is worth giving one more session, and what that session is not
 // allowed to do with it.
 //
-// A plan that trips a gate today is finished: the runner marks it needs-review, resets to the
-// base branch and moves on, and the whole session - a quarter of an hour of work - is thrown
-// away over a fault that is often one line. Of the three plans that have ever failed in this
-// queue, two failed exactly that way, both on a visual spec the plan never thought to run:
-// 248 on dom-welcome-name-screen, 309 on dom-menu-tabs-rhythm.
+// Without this, a plan that trips a gate is finished: the runner marks it needs-review, resets
+// to the base branch and moves on, and the whole session - a quarter of an hour of work - is
+// thrown away over a fault that is often one line. The typical case is a visual spec the plan
+// never thought to run, red by a few pixels.
 //
 // So the runner gets a repair pass. It is deliberately narrow, because an unattended second
 // session that is allowed to do anything is a way to turn a failed plan into a bad merge:
@@ -15,7 +14,7 @@
 //     way a scoped session cannot reason about, and is failed as before.
 //   - It may not re-record a snapshot. That is the one "fix" that makes any red go green
 //     while hiding what actually moved, and the plan's own session already had its chance to
-//     re-record the baselines it meant to change (preamble section 4). A red the runner found
+//     re-record the baselines it meant to change. A red the runner found
 //     afterwards is by definition one the plan did not intend.
 //   - It gets one attempt, and the full verdict is taken again afterwards, so nothing reaches
 //     the base branch on the strength of a gate that was not re-run.

@@ -3,11 +3,11 @@ import { describe, test } from 'node:test'
 
 import { DEFAULT_EFFORT, EFFORT_LEVELS, readPlanHeader, splitFrontMatter } from './plan-header.mjs'
 
-const PLAN = `# Lobby content lines up on one edge
+const PLAN = `# Settings content lines up on one edge
 
 ## Goal
 
-The lobby column gets a deliberate two-level alignment system.
+The settings column gets a deliberate two-level alignment system.
 `
 
 describe('splitFrontMatter', () => {
@@ -33,8 +33,8 @@ describe('splitFrontMatter', () => {
   })
 
   test('reads a value with a colon in it, and strips quotes', () => {
-    const split = splitFrontMatter('---\nticket: "NOC-142: the thing"\n---\nbody\n')
-    assert.deepEqual(split.fields, { ticket: 'NOC-142: the thing' })
+    const split = splitFrontMatter('---\nticket: "ABC-142: the thing"\n---\nbody\n')
+    assert.deepEqual(split.fields, { ticket: 'ABC-142: the thing' })
   })
 
   test('drops a trailing comment, so the template can carry its own rubric', () => {
@@ -43,8 +43,8 @@ describe('splitFrontMatter', () => {
   })
 
   test('keeps a # that is part of the value rather than a comment', () => {
-    const split = splitFrontMatter('---\nticket: NOC-1#2\n---\nbody\n')
-    assert.deepEqual(split.fields, { ticket: 'NOC-1#2' })
+    const split = splitFrontMatter('---\nticket: ABC-1#2\n---\nbody\n')
+    assert.deepEqual(split.fields, { ticket: 'ABC-1#2' })
   })
 
   test('keeps a commented-out value as empty rather than guessing', () => {
@@ -58,8 +58,8 @@ describe('splitFrontMatter', () => {
   })
 
   test('closes only on a --- of its own, not on one inside a value', () => {
-    const split = splitFrontMatter('---\nticket: NOC-1 --- part 2\neffort: low\n---\nbody\n')
-    assert.deepEqual(split.fields, { ticket: 'NOC-1 --- part 2', effort: 'low' })
+    const split = splitFrontMatter('---\nticket: ABC-1 --- part 2\neffort: low\n---\nbody\n')
+    assert.deepEqual(split.fields, { ticket: 'ABC-1 --- part 2', effort: 'low' })
     assert.equal(split.body, 'body\n')
   })
 
@@ -117,7 +117,7 @@ describe('readPlanHeader', () => {
   })
 
   test('falls back when front matter is present but says nothing about effort', () => {
-    const header = readPlanHeader('---\nticket: NOC-142\n---\nbody\n')
+    const header = readPlanHeader('---\nticket: ABC-142\n---\nbody\n')
     assert.equal(header.effort, DEFAULT_EFFORT)
     assert.equal(header.declared, false)
   })

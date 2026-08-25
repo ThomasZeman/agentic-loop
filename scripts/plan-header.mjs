@@ -39,7 +39,7 @@ const FIELD = /^([A-Za-z][\w-]*)[ \t]*:[ \t]*(.*)$/
  * The comment matters more than it looks. `_template.md` carries the list of levels on the
  * effort line itself, so an author choosing one is reading the choices while they choose - and
  * a template that only parses once you have deleted part of it is a template that ships typos.
- * A `#` with no space in front of it is part of the value, so `NOC-1#2` survives.
+ * A `#` with no space in front of it is part of the value, so `ABC-1#2` survives.
  */
 function readValue(raw) {
   const quoted = /^(['"])([\s\S]*?)\1/.exec(raw.trim())

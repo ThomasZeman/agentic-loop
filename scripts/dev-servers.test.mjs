@@ -12,28 +12,28 @@ import {
 } from './dev-servers.mjs'
 import { resolveRunnerConfig } from './runner-config.mjs'
 
-// A two-server app in the shape of Boardbash's: a backend that only proves it is alive, and
-// a Parcel-style frontend that answers before it is actually ready. Declared explicitly, as
-// a project's runner.json would - the defaults carry no servers at all.
+// A two-server app: a backend that only proves it is alive, and a frontend behind a bundler
+// dev server that answers before its first build is done. Declared explicitly, as a project's
+// runner.json would - the defaults carry no servers at all.
 const TWO_SERVER_CONFIG = resolveRunnerConfig({
   devServers: [
     {
       name: 'backend',
-      url: 'http://127.0.0.1:3005/',
-      packageDir: 'packages/backend',
+      url: 'http://127.0.0.1:4000/',
+      packageDir: 'packages/api',
       npmScript: 'dev',
       readyWhen: 'any-response',
     },
     {
       name: 'frontend',
-      url: 'http://127.0.0.1:1701/boardbash/',
-      packageDir: 'packages/frontend-boardfest',
+      url: 'http://127.0.0.1:5173/app/',
+      packageDir: 'packages/web',
       npmScript: 'start',
       startTimeoutSeconds: 420,
       readyWhen: 'http-200',
     },
   ],
-  watcherBlindPackages: ['shared', 'frontend-shared'],
+  watcherBlindPackages: ['core', 'ui'],
 })
 const servers = serverTable(TWO_SERVER_CONFIG)
 const backend = findDevServer(servers, 'backend')
@@ -53,8 +53,8 @@ function scriptedFetch(answers) {
 describe('serverTable', () => {
   test('turns a declared config into both halves of the running app', () => {
     assert.deepEqual(servers.map((server) => server.name), ['backend', 'frontend'])
-    assert.equal(backend.url, 'http://127.0.0.1:3005/')
-    assert.equal(frontend.url, 'http://127.0.0.1:1701/boardbash/')
+    assert.equal(backend.url, 'http://127.0.0.1:4000/')
+    assert.equal(frontend.url, 'http://127.0.0.1:5173/app/')
   })
 
   test("derives each server's probe predicate from its declared readyWhen", () => {
@@ -84,7 +84,7 @@ describe('findDevServer', () => {
 
 describe('probeServer', () => {
   test('reads any HTTP status from the backend as a live server', async () => {
-    // Fastify has no health route, so the root answers 404 - which only a running
+    // An API server with no health route answers 404 at the root - which only a running
     // server can do. Demanding a 200 there would wait for a readiness it never reports.
     const probe = await probeServer(backend, { fetchImpl: scriptedFetch([404]) })
     assert.equal(probe.up, true)
@@ -92,7 +92,7 @@ describe('probeServer', () => {
     assert.match(probe.detail, /404/)
   })
 
-  test('holds the frontend to a 200, since Parcel answers before its build is done', async () => {
+  test('holds the frontend to a 200, since a bundler dev server answers before its first build is done', async () => {
     const probe = await probeServer(frontend, { fetchImpl: scriptedFetch([503]) })
     assert.equal(probe.up, false)
     assert.match(probe.detail, /503/)
@@ -100,7 +100,7 @@ describe('probeServer', () => {
 
   test('reports a refused connection as down rather than throwing', async () => {
     const probe = await probeServer(backend, {
-      fetchImpl: scriptedFetch([new Error('connect ECONNREFUSED 127.0.0.1:3005')]),
+      fetchImpl: scriptedFetch([new Error('connect ECONNREFUSED 127.0.0.1:4000')]),
     })
     assert.equal(probe.up, false)
     assert.match(probe.detail, /ECONNREFUSED/)
@@ -110,10 +110,10 @@ describe('probeServer', () => {
     // Node's fetch reports every connection failure as a bare 'fetch failed'; without this
     // the runner's log says nothing about whether the port was refused, timed out, or hung.
     const wrapped = new TypeError('fetch failed', {
-      cause: new Error('connect ECONNREFUSED 127.0.0.1:1701'),
+      cause: new Error('connect ECONNREFUSED 127.0.0.1:5173'),
     })
     const probe = await probeServer(frontend, { fetchImpl: scriptedFetch([wrapped]) })
-    assert.equal(probe.detail, 'fetch failed: connect ECONNREFUSED 127.0.0.1:1701')
+    assert.equal(probe.detail, 'fetch failed: connect ECONNREFUSED 127.0.0.1:5173')
   })
 })
 
@@ -224,19 +224,20 @@ describe('planServerStartup', () => {
 
 describe('needsFrontendRestart', () => {
   test('is true for the packages the config says the watcher is blind to', () => {
-    // Parcel compiles these into the bundle but its watcher ignores node_modules, so an
-    // edit here produces no rebuild at all - and a mixed old/new bundle that only fails
-    // at runtime. Restarting the dev server is the only remedy in the tree.
-    assert.equal(needsFrontendRestart(['shared'], declaredBlind), true)
-    assert.equal(needsFrontendRestart(['frontend-shared'], declaredBlind), true)
-    assert.equal(needsFrontendRestart(['backend', 'shared'], declaredBlind), true)
+    // A bundler that resolves workspace packages through node_modules compiles these into
+    // the bundle but never watches them, so an edit here produces no rebuild at all - and a
+    // mixed old/new bundle that only fails at runtime. Restarting the dev server is the only
+    // remedy in the tree.
+    assert.equal(needsFrontendRestart(['core'], declaredBlind), true)
+    assert.equal(needsFrontendRestart(['ui'], declaredBlind), true)
+    assert.equal(needsFrontendRestart(['api', 'core'], declaredBlind), true)
   })
 
   test('is false for packages the watcher does see, and for none at all', () => {
-    assert.equal(needsFrontendRestart(['frontend-boardfest'], declaredBlind), false)
-    assert.equal(needsFrontendRestart(['backend'], declaredBlind), false)
+    assert.equal(needsFrontendRestart(['web'], declaredBlind), false)
+    assert.equal(needsFrontendRestart(['api'], declaredBlind), false)
     assert.equal(needsFrontendRestart([], declaredBlind), false)
     assert.equal(needsFrontendRestart(null, declaredBlind), false)
-    assert.equal(needsFrontendRestart(['shared'], []), false)
+    assert.equal(needsFrontendRestart(['core'], []), false)
   })
 })

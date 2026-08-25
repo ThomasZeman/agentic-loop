@@ -3,8 +3,8 @@
 //
 // The pre-flight runs `npm run test:visual` once before the first plan branches, purely to learn
 // which screenshots are already red on the base branch - the set every plan inherits and is
-// therefore not blamed for. That sweep costs four minutes of every batch, and the ticket loop
-// runs one plan per batch, so nothing amortises it.
+// therefore not blamed for. That sweep costs minutes of every batch, and a batch of one plan
+// - the common case when plans are queued one at a time - amortises none of it.
 //
 // It is also redundant. Each plan runs the same suite during its own verification, on its own
 // branch, and that branch tip is exactly what the base branch fast-forwards to when the plan

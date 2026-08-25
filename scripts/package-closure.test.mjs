@@ -7,19 +7,19 @@ import { describe, test } from 'node:test'
 import { dependencyClosure, dependentsOf, readManifests } from './package-closure.mjs'
 
 /**
- * The workspace as it stands, spelled out rather than read from disk: frontend-boardfest
- * reaches shared only through frontend-shared, which is what makes the walk transitive rather
- * than a single hop, and shared depends on itself, which is what a naive walk hangs on.
+ * An invented workspace, spelled out rather than read from disk: the `web` app reaches `core`
+ * only through the `ui` library, which is what makes the walk transitive rather than a single
+ * hop, and `core` depends on itself, which is what a naive walk hangs on.
  */
 const WORKSPACE = [
-  { directory: 'backend', name: '@nocap/backend', dependencies: ['@nocap/shared'] },
+  { directory: 'api', name: '@acme/api', dependencies: ['@acme/core'] },
   {
-    directory: 'frontend-boardfest',
-    name: '@nocap/frontend-boardfest',
-    dependencies: ['@nocap/frontend-shared'],
+    directory: 'web',
+    name: '@acme/web',
+    dependencies: ['@acme/ui'],
   },
-  { directory: 'frontend-shared', name: '@nocap/frontend-shared', dependencies: ['@nocap/shared'] },
-  { directory: 'shared', name: '@nocap/shared', dependencies: ['@nocap/shared'] },
+  { directory: 'ui', name: '@acme/ui', dependencies: ['@acme/core'] },
+  { directory: 'core', name: '@acme/core', dependencies: ['@acme/core'] },
 ]
 
 const withTempPackages = (packages, assertions) => {
@@ -36,38 +36,30 @@ const withTempPackages = (packages, assertions) => {
 }
 
 describe('which packages a change has to be verified against', () => {
-  test('a change to frontend-shared also verifies the one package built on it', () => {
-    assert.deepEqual(dependentsOf(['frontend-shared'], WORKSPACE), [
-      'frontend-boardfest',
-      'frontend-shared',
-    ])
+  test('a change to ui also verifies the one package built on it', () => {
+    assert.deepEqual(dependentsOf(['ui'], WORKSPACE), ['ui', 'web'])
   })
 
-  test('a change to shared verifies every package, including the one two hops away', () => {
-    assert.deepEqual(dependentsOf(['shared'], WORKSPACE), [
-      'backend',
-      'frontend-boardfest',
-      'frontend-shared',
-      'shared',
-    ])
+  test('a change to core verifies every package, including the one two hops away', () => {
+    assert.deepEqual(dependentsOf(['core'], WORKSPACE), ['api', 'core', 'ui', 'web'])
   })
 
   test('a change to a package nothing builds on verifies only that package', () => {
-    assert.deepEqual(dependentsOf(['frontend-boardfest'], WORKSPACE), ['frontend-boardfest'])
+    assert.deepEqual(dependentsOf(['web'], WORKSPACE), ['web'])
   })
 
   test('a package that depends on itself terminates and is listed once', () => {
     const selfReferential = [
-      { directory: 'shared', name: '@nocap/shared', dependencies: ['@nocap/shared'] },
+      { directory: 'core', name: '@acme/core', dependencies: ['@acme/core'] },
     ]
 
-    assert.deepEqual(dependentsOf(['shared'], selfReferential), ['shared'])
+    assert.deepEqual(dependentsOf(['core'], selfReferential), ['core'])
   })
 
   test('a pair that depend on each other terminates and each is listed once', () => {
     const mutual = [
-      { directory: 'left', name: '@nocap/left', dependencies: ['@nocap/right'] },
-      { directory: 'right', name: '@nocap/right', dependencies: ['@nocap/left'] },
+      { directory: 'left', name: '@acme/left', dependencies: ['@acme/right'] },
+      { directory: 'right', name: '@acme/right', dependencies: ['@acme/left'] },
     ]
 
     assert.deepEqual(dependentsOf(['left'], mutual), ['left', 'right'])
@@ -76,11 +68,7 @@ describe('which packages a change has to be verified against', () => {
 
   test('a changed directory with no manifest is passed through, not thrown on', () => {
     assert.deepEqual(dependentsOf(['docs'], WORKSPACE), ['docs'])
-    assert.deepEqual(dependentsOf(['docs', 'frontend-shared'], WORKSPACE), [
-      'docs',
-      'frontend-boardfest',
-      'frontend-shared',
-    ])
+    assert.deepEqual(dependentsOf(['docs', 'ui'], WORKSPACE), ['docs', 'ui', 'web'])
   })
 
   test('a change to nothing verifies nothing', () => {
@@ -88,12 +76,7 @@ describe('which packages a change has to be verified against', () => {
   })
 
   test('the same package named twice is verified once', () => {
-    assert.deepEqual(dependentsOf(['shared', 'shared'], WORKSPACE), [
-      'backend',
-      'frontend-boardfest',
-      'frontend-shared',
-      'shared',
-    ])
+    assert.deepEqual(dependentsOf(['core', 'core'], WORKSPACE), ['api', 'core', 'ui', 'web'])
   })
 })
 
@@ -101,23 +84,19 @@ describe('what a package builds on', () => {
   const byName = new Map(WORKSPACE.map((manifest) => [manifest.name, manifest]))
 
   test('reaches a package it depends on only through another', () => {
-    const boardfest = byName.get('@nocap/frontend-boardfest')
+    const web = byName.get('@acme/web')
 
-    assert.deepEqual(dependencyClosure(boardfest, byName), [
-      'frontend-boardfest',
-      'frontend-shared',
-      'shared',
-    ])
+    assert.deepEqual(dependencyClosure(web, byName), ['core', 'ui', 'web'])
   })
 
   test('a self-dependency terminates and appears once', () => {
-    assert.deepEqual(dependencyClosure(byName.get('@nocap/shared'), byName), ['shared'])
+    assert.deepEqual(dependencyClosure(byName.get('@acme/core'), byName), ['core'])
   })
 
   test('a dependency outside the workspace is ignored', () => {
-    const manifest = { directory: 'backend', name: '@nocap/backend', dependencies: ['express'] }
+    const manifest = { directory: 'api', name: '@acme/api', dependencies: ['express'] }
 
-    assert.deepEqual(dependencyClosure(manifest, new Map([[manifest.name, manifest]])), ['backend'])
+    assert.deepEqual(dependencyClosure(manifest, new Map([[manifest.name, manifest]])), ['api'])
   })
 })
 
@@ -125,30 +104,30 @@ describe('reading the workspace manifests', () => {
   test('reports each package with its merged dependencies and whether it has a visual suite', () => {
     withTempPackages(
       {
-        'frontend-boardfest': {
-          name: '@nocap/frontend-boardfest',
-          dependencies: { '@nocap/shared': '*' },
-          devDependencies: { '@nocap/frontend-shared': '*' },
+        web: {
+          name: '@acme/web',
+          dependencies: { '@acme/core': '*' },
+          devDependencies: { '@acme/ui': '*' },
           scripts: { 'test:visual': 'playwright test' },
         },
-        shared: { name: '@nocap/shared', scripts: { test: 'jest' } },
+        core: { name: '@acme/core', scripts: { test: 'jest' } },
       },
       (root) => {
         assert.deepEqual(readManifests(root), [
+          { directory: 'core', name: '@acme/core', dependencies: [], hasVisualSuite: false },
           {
-            directory: 'frontend-boardfest',
-            name: '@nocap/frontend-boardfest',
-            dependencies: ['@nocap/shared', '@nocap/frontend-shared'],
+            directory: 'web',
+            name: '@acme/web',
+            dependencies: ['@acme/core', '@acme/ui'],
             hasVisualSuite: true,
           },
-          { directory: 'shared', name: '@nocap/shared', dependencies: [], hasVisualSuite: false },
         ])
       },
     )
   })
 
   test('skips a directory whose manifest is missing or unreadable', () => {
-    withTempPackages({ broken: { name: '@nocap/broken' }, nameless: {} }, (root) => {
+    withTempPackages({ broken: { name: '@acme/broken' }, nameless: {} }, (root) => {
       writeFileSync(path.join(root, 'broken', 'package.json'), '{ not json', 'utf8')
       mkdirSync(path.join(root, 'no-manifest'), { recursive: true })
 

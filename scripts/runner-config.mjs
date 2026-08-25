@@ -5,8 +5,8 @@
  * The defaults are neutral: generic npm conventions (a `packages/` workspace, `test` and
  * `test:visual` scripts, the quality ratchet on), no dev servers, no watcher-blind packages
  * and no hooks. A project declares what it has - its own dev servers, its blind packages,
- * its hooks - and overrides only the gate values that differ. Boardbash's own config is
- * `examples/boardbash/runner.json`.
+ * its hooks - and overrides only the gate values that differ, all in its own
+ * `plans/runner.json`.
  *
  * Resolution is strict rather than forgiving. This file is read at the start of an
  * unattended overnight run; a typo silently ignored here surfaces eight hours later as a
@@ -74,6 +74,12 @@ export const DEFAULT_CONFIG = Object.freeze({
     /** `post|clear --plan <path> [--version <v>]` -> JSON `{posted, shots, issue}`. */
     demo: null,
     /**
+     * `--plan <plan file>`, run after every plan whatever its outcome: the project's own sweep
+     * of what a dead session may have left behind (a browser window, a device state). Output
+     * is optional; a JSON `{note}` is shown. Never fails a plan.
+     */
+    afterPlan: null,
+    /**
      * `{ command, perPlanPlatform, perBatchPlatform }`; `perPlanPlatform` is required,
      * `perBatchPlatform` defaults to null (no batch tag). `tag --platform <p> --log-file <f>`
      * -> `{tag, version, actionsUrl}`; `status --tag <t> [--fallback-url <u>]` ->
@@ -83,7 +89,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   }),
 })
 
-const COMMAND_HOOKS = Object.freeze(['siblingsAfter', 'demo'])
+const COMMAND_HOOKS = Object.freeze(['siblingsAfter', 'demo', 'afterPlan'])
 
 const RELEASE_HOOK_DEFAULTS = Object.freeze({
   perBatchPlatform: null,

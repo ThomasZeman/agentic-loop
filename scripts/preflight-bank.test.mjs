@@ -3,10 +3,10 @@ import { describe, test } from 'node:test'
 
 import { decideBank, decideVisualReuse } from './preflight-bank.mjs'
 
-const CLOSURE = { 'frontend-boardfest': ['frontend-boardfest', 'frontend-shared', 'shared'] }
-const VISUAL_PACKAGES = ['frontend-boardfest']
+const CLOSURE = { 'web': ['web', 'ui', 'core'] }
+const VISUAL_PACKAGES = ['web']
 
-const bankAt = (commit, failures) => ({ commit, visual: { 'frontend-boardfest': failures } })
+const bankAt = (commit, failures) => ({ commit, visual: { 'web': failures } })
 
 const bankFor = (options) =>
   decideBank(options.previousBank ?? null, {
@@ -20,14 +20,14 @@ const bankFor = (options) =>
 
 describe('decideVisualReuse', () => {
   test('reuses the set banked for the commit the base branch sits on', () => {
-    const answer = decideVisualReuse(bankAt('c0ffee', ['lobby.spec.ts:12']), 'c0ffee')
+    const answer = decideVisualReuse(bankAt('c0ffee', ['home.spec.ts:12']), 'c0ffee')
 
     assert.equal(answer.reuse, true)
-    assert.deepEqual(answer.visual, { 'frontend-boardfest': ['lobby.spec.ts:12'] })
+    assert.deepEqual(answer.visual, { 'web': ['home.spec.ts:12'] })
   })
 
   test('refuses a set banked for some other commit', () => {
-    const answer = decideVisualReuse(bankAt('c0ffee', ['lobby.spec.ts:12']), 'deadbee')
+    const answer = decideVisualReuse(bankAt('c0ffee', ['home.spec.ts:12']), 'deadbee')
 
     assert.equal(answer.reuse, false)
     assert.deepEqual(answer.visual, {})
@@ -45,54 +45,54 @@ describe('decideVisualReuse', () => {
     const answer = decideVisualReuse(bankAt('c0ffee', []), 'c0ffee')
 
     assert.equal(answer.reuse, true)
-    assert.deepEqual(answer.visual, { 'frontend-boardfest': [] })
+    assert.deepEqual(answer.visual, { 'web': [] })
   })
 })
 
 describe('decideBank, after a plan fast-forwards the base branch', () => {
   test('records the set the plan\'s own sweep measured', () => {
     const record = bankFor({
-      previousBank: bankAt('c0ffee', ['lobby.spec.ts:12']),
+      previousBank: bankAt('c0ffee', ['home.spec.ts:12']),
       from: 'c0ffee',
       commit: 'deadbee',
-      changedPackages: ['frontend-boardfest'],
-      measured: { 'frontend-boardfest': ['lobby.spec.ts:12', 'menu.spec.ts:4'] },
+      changedPackages: ['web'],
+      measured: { 'web': ['home.spec.ts:12', 'menu.spec.ts:4'] },
     })
 
     assert.deepEqual(record, {
       commit: 'deadbee',
-      visual: { 'frontend-boardfest': ['lobby.spec.ts:12', 'menu.spec.ts:4'] },
+      visual: { 'web': ['home.spec.ts:12', 'menu.spec.ts:4'] },
     })
   })
 
   test('a measurement is banked even when nothing was banked before', () => {
     const record = bankFor({
       commit: 'deadbee',
-      changedPackages: ['frontend-boardfest'],
-      measured: { 'frontend-boardfest': [] },
+      changedPackages: ['web'],
+      measured: { 'web': [] },
     })
 
-    assert.deepEqual(record, { commit: 'deadbee', visual: { 'frontend-boardfest': [] } })
+    assert.deepEqual(record, { commit: 'deadbee', visual: { 'web': [] } })
   })
 
   test('carries the previous set over a plan that touched nothing in the closure', () => {
     const record = bankFor({
-      previousBank: bankAt('c0ffee', ['lobby.spec.ts:12']),
+      previousBank: bankAt('c0ffee', ['home.spec.ts:12']),
       from: 'c0ffee',
       commit: 'deadbee',
-      changedPackages: ['backend'],
+      changedPackages: ['api'],
     })
 
     assert.deepEqual(record, {
       commit: 'deadbee',
-      visual: { 'frontend-boardfest': ['lobby.spec.ts:12'] },
+      visual: { 'web': ['home.spec.ts:12'] },
     })
   })
 
   test('clears when a plan changed the closure without sweeping it', () => {
-    for (const changed of [['shared'], ['frontend-shared'], ['frontend-boardfest']]) {
+    for (const changed of [['core'], ['ui'], ['web']]) {
       const record = bankFor({
-        previousBank: bankAt('c0ffee', ['lobby.spec.ts:12']),
+        previousBank: bankAt('c0ffee', ['home.spec.ts:12']),
         from: 'c0ffee',
         commit: 'deadbee',
         changedPackages: changed,
@@ -107,7 +107,7 @@ describe('decideBank, after a plan fast-forwards the base branch', () => {
       previousBank: null,
       from: 'c0ffee',
       commit: 'deadbee',
-      changedPackages: ['backend'],
+      changedPackages: ['api'],
     })
 
     assert.equal(record, null)
@@ -115,10 +115,10 @@ describe('decideBank, after a plan fast-forwards the base branch', () => {
 
   test('refuses to carry a set measured on a tree the plan did not branch from', () => {
     const record = bankFor({
-      previousBank: bankAt('c0ffee', ['lobby.spec.ts:12']),
+      previousBank: bankAt('c0ffee', ['home.spec.ts:12']),
       from: 'a11ce',
       commit: 'deadbee',
-      changedPackages: ['backend'],
+      changedPackages: ['api'],
     })
 
     assert.equal(record, null)
@@ -126,16 +126,16 @@ describe('decideBank, after a plan fast-forwards the base branch', () => {
 
   test('a fresh measurement outweighs a previous bank the plan did not branch from', () => {
     const record = bankFor({
-      previousBank: bankAt('c0ffee', ['lobby.spec.ts:12']),
+      previousBank: bankAt('c0ffee', ['home.spec.ts:12']),
       from: 'a11ce',
       commit: 'deadbee',
-      changedPackages: ['frontend-boardfest'],
-      measured: { 'frontend-boardfest': ['menu.spec.ts:4'] },
+      changedPackages: ['web'],
+      measured: { 'web': ['menu.spec.ts:4'] },
     })
 
     assert.deepEqual(record, {
       commit: 'deadbee',
-      visual: { 'frontend-boardfest': ['menu.spec.ts:4'] },
+      visual: { 'web': ['menu.spec.ts:4'] },
     })
   })
 
@@ -143,7 +143,7 @@ describe('decideBank, after a plan fast-forwards the base branch', () => {
     const record = decideBank(null, {
       commit: 'deadbee',
       from: 'c0ffee',
-      changedPackages: ['backend'],
+      changedPackages: ['api'],
       visualPackages: [],
       closure: {},
       measured: {},
@@ -153,32 +153,32 @@ describe('decideBank, after a plan fast-forwards the base branch', () => {
   })
 
   test('banks nothing when the fast-forward produced no commit to name', () => {
-    assert.equal(bankFor({ commit: null, measured: { 'frontend-boardfest': [] } }), null)
+    assert.equal(bankFor({ commit: null, measured: { 'web': [] } }), null)
   })
 
   test('every visual package must be accounted for, not just the one that ran', () => {
-    const record = decideBank(bankAt('c0ffee', ['lobby.spec.ts:12']), {
+    const record = decideBank(bankAt('c0ffee', ['home.spec.ts:12']), {
       commit: 'deadbee',
       from: 'c0ffee',
-      changedPackages: ['frontend-boardfest', 'frontend-original'],
-      visualPackages: ['frontend-boardfest', 'frontend-original'],
-      closure: { ...CLOSURE, 'frontend-original': ['frontend-original', 'shared'] },
-      measured: { 'frontend-boardfest': [] },
+      changedPackages: ['web', 'web-legacy'],
+      visualPackages: ['web', 'web-legacy'],
+      closure: { ...CLOSURE, 'web-legacy': ['web-legacy', 'core'] },
+      measured: { 'web': [] },
     })
 
     assert.equal(record, null)
   })
 
   test('the record it writes is not the previous bank\'s array', () => {
-    const previous = bankAt('c0ffee', ['lobby.spec.ts:12'])
+    const previous = bankAt('c0ffee', ['home.spec.ts:12'])
     const record = bankFor({
       previousBank: previous,
       from: 'c0ffee',
       commit: 'deadbee',
-      changedPackages: ['backend'],
+      changedPackages: ['api'],
     })
 
-    record.visual['frontend-boardfest'].push('menu.spec.ts:4')
-    assert.deepEqual(previous.visual['frontend-boardfest'], ['lobby.spec.ts:12'])
+    record.visual['web'].push('menu.spec.ts:4')
+    assert.deepEqual(previous.visual['web'], ['home.spec.ts:12'])
   })
 })

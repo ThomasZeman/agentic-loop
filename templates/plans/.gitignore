@@ -4,5 +4,4 @@ logs/
 .visual-baseline.json
 .preflight-bank.json
 .plan-lock/
-.ticket-loop.lock
 .scratch/

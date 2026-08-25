@@ -143,9 +143,9 @@ param(
     # Only reached under -WaitForDeploy.
     [int] $DeployTimeoutMinutes = 30,
 
-    # Do not put a plan's showcase screenshots on its Linear ticket, and throw them away with
+    # Do not hand a plan's showcase screenshots to the demo hook, and throw them away with
     # the rest of the run. On by default, and a no-op for every plan that captured nothing or
-    # belongs to no ticket - which is why it needs no switch to turn it on.
+    # for a project with no demo hook - which is why it needs no switch to turn it on.
     [switch] $SkipTicketDemo,
 
     # Prefixed onto every plan's branch name, so plan branches are greppable and can never
@@ -563,9 +563,9 @@ function Get-ClaudeArgs {
         $claudeArgs += @('--permission-mode', 'acceptEdits')
         $claudeArgs += '--allowedTools'
         # mcp__claude-in-chrome is the whole server, so a plan can open the running app and
-        # look at it. Bash(powershell:*) is here for launch-test-players.ps1, which gives it
-        # a Chrome of its own to look at - see rule 4 of plans/_preamble.md. Neither widens
-        # the blast radius much next to Bash(node:*), which already runs arbitrary code.
+        # look at it. Bash(powershell:*) lets a project's own PowerShell tooling run - a
+        # browser launcher, say - as the project section may direct. Neither widens the
+        # blast radius much next to Bash(node:*), which already runs arbitrary code.
         $claudeArgs += @(
             'Read', 'Glob', 'Grep', 'Edit', 'Write', 'TodoWrite', 'Task',
             'Bash(npm:*)', 'Bash(npx:*)', 'Bash(node:*)', 'Bash(git:*)',
@@ -809,7 +809,7 @@ function Invoke-DevServerCli {
     Through ComSpec for the same reason Invoke-PackageScript is: npm's output must not reach
     PowerShell's error stream. Unlike that one this never waits - the process is the point,
     and readiness is established by polling the port rather than by watching the log, which
-    is the only signal that means the same thing for nodemon and for Parcel.
+    is the only signal that means the same thing for every kind of dev server.
 #>
 function Start-DevServer {
     param([string] $RepoRoot, $Server, [string] $LogFile)
@@ -863,11 +863,10 @@ function Wait-ForDevServers {
 .SYNOPSIS
     Brings up the app the batch will be checked against, and says what it now owns.
 .DESCRIPTION
-    Rule 4 of the preamble tells a plan to verify a user-visible change in a real browser, and
-    scripts/launch-test-players.ps1 needs the backend and the dev server already running to do
-    it. Nothing used to make that true - it depended on what happened to be running on the
-    machine - so a plan either wasted its session on a page that never answered or quietly
-    skipped the check.
+    Section 4 of the spine tells a plan to verify a user-visible change in a real browser, and
+    that needs the project's dev servers already running. Nothing used to make that true - it
+    depended on what happened to be running on the machine - so a plan either wasted its
+    session on a page that never answered or quietly skipped the check.
 
     A server already listening is adopted and never stopped: this is also the development
     machine, and killing a dev server somebody is using is a worse failure than the tidiness
@@ -941,16 +940,8 @@ function Get-AppStatusLine {
         # the prompt never names a server the target project does not declare.
         $listed = (@($Servers) | ForEach-Object { "$($_.name) $($_.url)" }) -join ', '
         $status = "- The app is already running for this batch and is the runner's to manage: $listed." +
-            "`n  Do not start or restart any of these servers."
-
-        # The test-player launcher is Boardbash's own tooling; the sentence about it is
-        # only true in a repo that carries the script.
-        $launcher = ''
-        if ($RepoRoot) { $launcher = Join-Path $RepoRoot 'scripts/launch-test-players.ps1' }
-        if ($launcher -and (Test-Path $launcher)) {
-            $status += " To drive it, launch a throwaway player with`n" +
-                '  `./scripts/launch-test-players.ps1 -Count 1 -Reset -StartId 1` and close it with `-Close`.'
-        }
+            "`n  Do not start or restart any of these servers. Drive the app the way the project" +
+            "`n  section describes."
         return $status
     }
 
@@ -977,13 +968,15 @@ function Get-CommitPackages {
 
 <#
 .SYNOPSIS
-    Restarts the frontend dev server when a plan changed something Parcel will never notice.
+    Restarts the frontend dev server when a plan changed something its bundler will never
+    notice.
 .DESCRIPTION
-    frontend-boardfest imports packages/shared and packages/frontend-shared through the
-    node_modules workspace symlinks, and Parcel's watcher ignores node_modules - so an edit
-    there triggers no rebuild at all. Files inside frontend-boardfest do rebuild, so what is
-    served is a mixed old/new bundle that type-checks, builds, and breaks only at runtime.
-    Left alone, the next plan in the queue would check its work against exactly that.
+    A frontend that imports workspace packages through node_modules symlinks is served by a
+    bundler whose watcher ignores node_modules - so an edit in one of those packages triggers
+    no rebuild at all, while files inside the frontend itself do rebuild. What is served is
+    then a mixed old/new bundle that type-checks, builds, and breaks only at runtime, and the
+    next plan in the queue would check its work against exactly that. Which packages are
+    blind that way is the project's to declare: watcherBlindPackages in plans/runner.json.
 
     Only what this run started is restarted. An adopted server belongs to whoever started it,
     and the warning is the most this may do to it.
@@ -998,11 +991,11 @@ function Restart-StaleFrontend {
     if (-not $answer.answer -or -not $answer.answer.restartFrontend) { return }
 
     if (-not $Owned.ContainsKey('frontend')) {
-        Write-Host "  !! this plan changed a package Parcel never watches, and the frontend dev server is not this run's to restart - the next plan may be checked against a mixed old/new bundle" -ForegroundColor Yellow
+        Write-Host "  !! this plan changed a package the bundler never watches, and the frontend dev server is not this run's to restart - the next plan may be checked against a mixed old/new bundle" -ForegroundColor Yellow
         return
     }
 
-    Write-Host "  ++ restarting the frontend dev server - this plan changed a package Parcel's watcher ignores" -ForegroundColor DarkCyan
+    Write-Host "  ++ restarting the frontend dev server - this plan changed a package the bundler's watcher ignores" -ForegroundColor DarkCyan
     $entry = $Owned['frontend']
     Stop-ProcessTree -ProcessId $entry.process.Id
     $entry.process = Start-DevServer -RepoRoot $RepoRoot -Server $entry.server -LogFile $entry.log
@@ -1014,32 +1007,33 @@ function Restart-StaleFrontend {
 
 <#
 .SYNOPSIS
-    Closes any test-player Chrome window a plan left open.
+    Runs the project's `afterPlan` hook, whatever the plan's outcome. Reports rather than throws.
 .DESCRIPTION
-    The preamble tells each plan to close its own, and a plan that dies mid-session cannot.
-    A leftover window is not harmless: each holds a WebSocket session for its uid, and the
-    next plan launching the same player displaces it and gets the "Opened in Another Tab"
-    overlay instead of the app.
+    The spine tells each plan to leave nothing behind, and a plan that dies mid-session
+    cannot. What "behind" means is the project's business - a browser window that holds a
+    session, a device left in a state the next plan cannot start from - so the sweep is the
+    project's script, named in plans/runner.json. Its stdout's first line, if any, is shown;
+    a fault is a line on the console, never a verdict on the plan.
 #>
-function Close-TestPlayers {
-    param([string] $RepoRoot)
+function Invoke-AfterPlanHook {
+    param([string] $RepoRoot, [string] $PlanName)
 
-    $launcher = Join-Path $RepoRoot 'scripts/launch-test-players.ps1'
-    if (-not (Test-Path $launcher)) { return }
+    $hook = $script:Config.hooks.afterPlan
+    if (-not $hook) { return }
 
-    $stdout = New-TempPath '.txt'
-    $stderr = New-TempPath '.err.txt'
     try {
-        $null = Invoke-CapturedProcess -FilePath 'powershell.exe' `
-            -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcher, '-Close') `
-            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 3
-
-        $said = Get-Content -Path $stdout -Raw -Encoding UTF8
-        if ($said -match 'closed (\d+) test-player') {
-            Write-Host "        tidy:   closed $($Matches[1]) test-player Chrome process(es) left open" -ForegroundColor DarkYellow
+        $result = Invoke-Hook -RepoRoot $RepoRoot -Command $hook -HookArgs @('--plan', $PlanName) -TimeoutMinutes 3
+        if ($result.exitCode -ne 0) {
+            Write-Host "        !! afterPlan hook failed (exit $($result.exitCode)): $($result.error)" -ForegroundColor Yellow
+            return
+        }
+        if ($result.answer -and $result.answer.note) {
+            Write-Host "        tidy:   $($result.answer.note)" -ForegroundColor DarkYellow
         }
     }
-    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+    catch {
+        Write-Host "        !! afterPlan hook failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -1306,9 +1300,8 @@ function Get-ChangedPackages {
     built on one of them.
 .DESCRIPTION
     Get-ChangedPackages above is the truth about the diff and a lie about the blast radius.
-    frontend-boardfest is built on frontend-shared, which is built on shared, so a plan editing
-    a shared package could break a consumer, verify green against the one package it touched,
-    merge and ship. The graph lives in scripts/package-closure.mjs, where it is tested and read
+    A workspace package built on another one means a plan editing the shared package could
+    break the consumer, verify green against the one package it touched, merge and ship. The graph lives in scripts/package-closure.mjs, where it is tested and read
     from the manifests rather than written down.
 
     Only this call site expands. Save-PreflightBank deliberately keeps the literal diff: it
@@ -1430,14 +1423,14 @@ function Test-PackageHasScript {
     Runs one package's `test:visual` suite, when it has one, and fails the plan for any
     screenshot that this plan turned red - not for the ones it inherited.
 .DESCRIPTION
-    The reason this is separate from the jest run: frontend-boardfest's jest config sets
-    testPathIgnorePatterns to <rootDir>/tests/, which is exactly where the Playwright specs
-    live. `npm run test` therefore cannot see a single visual spec, and without this the
-    runner verified a screen-shaped change without ever opening a browser - while the
-    preamble's rule 4 told the agent a real browser was mandatory. That gap was honour-system
-    in both directions: nothing checked that the suite ran, and nothing failed when it didn't.
+    The reason this is separate from the unit run: a visual suite typically lives outside the
+    unit runner's test paths, so the test gate cannot see a single visual spec, and without
+    this the runner would verify a screen-shaped change without ever opening a browser -
+    while section 4 of the spine tells the agent a real browser is mandatory. That gap would
+    be honour-system in both directions: nothing checking that the suite ran, and nothing
+    failing when it didn't.
 
-    Slower than the jest run - three DPR projects over every spec - so it gets its own,
+    Slower than the unit run - a browser over every spec - so it gets its own,
     longer deadline rather than sharing the 20-minute one.
 
     Why this is a ratchet and not a pass/fail on the exit code: the suite carries a standing
@@ -3074,7 +3067,7 @@ function Wait-ForDeploy {
     R6.2: the build is not waited on. That wait cost a median of 6.3 minutes per shipped plan,
     serial with everything else, and bought nothing a later process cannot do: a record left
     `pending` in .state.json can be polled and settled by whatever the project runs between
-    batches (Boardbash's ticket loop, for one). -WaitForDeploy asks for the verdict here
+    batches (a ticket loop, for one). -WaitForDeploy asks for the verdict here
     instead, for a standalone run with nothing behind it.
 
     `pending` is only ever recorded for a tag that was actually pushed - there would be nothing
@@ -3216,18 +3209,18 @@ function Assert-ReleaseToolsPresent {
 # the runner knows whether the plan survived verification. So the demo waits here, and a plan
 # that failed has its shots discarded rather than posted.
 #
-# Deliberately outside -ReleaseEachPlan. Releasing is about tags and CI and needs no Linear
-# credentials (see release-cli.mjs); this is the one thing the runner does that does need
-# them, and only ever for a plan that both captured something and names a ticket - which is
-# why it costs a queue of ordinary plans nothing and needs no switch to turn it on.
+# Deliberately outside -ReleaseEachPlan. Releasing is about tags and CI; this is the one
+# thing the runner does that may need a ticket system's credentials, and only ever for a
+# project with a demo hook and a plan that captured something - which is why it costs a
+# queue of ordinary plans nothing and needs no switch to turn it on.
 
 <#
 .SYNOPSIS
-    Runs one ticket-demo-cli.mjs command over a plan. Reports rather than throws.
+    Runs one demo-hook command over a plan. Reports rather than throws.
 .DESCRIPTION
     Nothing here may fail a plan. By the time this runs the work is committed, merged and
-    possibly released; a Linear outage, a missing credential or a malformed manifest is a
-    line on the console, not a verdict on an hour of verified work.
+    possibly released; a ticket-system outage, a missing credential or a malformed manifest
+    is a line on the console, not a verdict on an hour of verified work.
 #>
 function Invoke-TicketDemoCli {
     param([string] $RepoRoot, [string] $Command, [string] $PlanPath, [string] $Version)
@@ -3420,7 +3413,7 @@ if (-not $DryRun) {
     }
 
     # The app each plan checks its work against, brought up before the pre-flight rather than
-    # after it: the pre-flight is the longest thing in the run, and Parcel's cold build gets to
+    # after it: the pre-flight is the longest thing in the run, and a cold build gets to
     # happen underneath it instead of on the first plan's clock.
     if (-not $SkipDevServers) {
         Write-Host ''
@@ -3555,16 +3548,15 @@ try {
         # Written before the release so a run killed mid-deploy still records the finished plan.
         Write-RunState -Path $statePath -State $state
 
-        # Whatever the outcome. The preamble tells each plan to close its own test players and a
-        # plan that died mid-session could not - and a window left open holds the WebSocket
-        # session for its uid, so the next plan launching that player is displaced by it.
-        if (-not $SkipDevServers) { Close-TestPlayers -RepoRoot $repoRoot }
+        # Whatever the outcome. The spine tells each plan to leave nothing behind, and a plan
+        # that died mid-session could not - so the project's own sweep runs here, if it has one.
+        Invoke-AfterPlanHook -RepoRoot $repoRoot -PlanName $plan.Name
 
         if ($status -eq 'completed') {
             Write-Host "  OK  committed $($run.commit.Substring(0,8)) and merged into $baseBranch" -ForegroundColor Green
 
             # Before the next plan branches: what this one merged may be invisible to the running
-            # Parcel, and the next plan would then check its work against a mixed old/new bundle.
+            # bundler, and the next plan would then check its work against a mixed old/new bundle.
             if (-not $SkipDevServers) {
                 Restart-StaleFrontend -RepoRoot $repoRoot -Commit $run.commit -Owned $devServers
             }

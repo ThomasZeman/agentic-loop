@@ -82,7 +82,7 @@ describe('settledPlanNames, from the tracked files', () => {
   })
 })
 
-// The ticket loop lists from inside plans/ rather than from the repo root, so it sees the
+// A caller may list from inside plans/ rather than from the repo root, so it sees the
 // same files under one path segment fewer. Both callers must agree on which of them is a plan.
 describe('trackedPlanNames, from a listing taken inside the plans directory', () => {
   test('a plan file is one', () => {

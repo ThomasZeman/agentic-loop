@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * The bridge `run-plans.ps1` and `ticket-loop.ps1` call to ask whether the working tree
- * permits a plan run, answering on stdout as JSON.
+ * The bridge `run-plans.ps1` (and any other automation sharing the checkout) calls to ask
+ * whether the working tree permits a plan run, answering on stdout as JSON.
  *
  * It reads the tree itself rather than taking a snapshot from PowerShell: `Set-Content
  * -Encoding UTF8` on PowerShell 5.1 writes a BOM, which would arrive glued to the first path

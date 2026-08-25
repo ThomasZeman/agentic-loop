@@ -2,16 +2,16 @@
  * The dev servers a plan needs running before it can look at the real app, and the
  * questions `run-plans.ps1` asks about them.
  *
- * Rule 4 of `plans/_preamble.md` tells an unattended plan to verify a user-visible change in
- * a browser, and that needs the app's servers already running. Nothing used to make that
- * true: whether a plan could open the app at all depended on what happened to be running on
- * the machine when the queue started. The runner now guarantees it for the whole batch, and
- * this module holds the parts of that worth testing - PowerShell keeps only what it is good
- * at, which is starting a detached process and killing it again.
+ * The preamble tells an unattended plan to verify a user-visible change in a browser, and
+ * that needs the app's servers already running. Left to chance, whether a plan can open the
+ * app at all depends on what happens to be running on the machine when the queue starts.
+ * The runner guarantees it for the whole batch instead, and this module holds the parts of
+ * that worth testing - PowerShell keeps only what it is good at, which is starting a
+ * detached process and killing it again.
  *
  * Which servers exist is the target project's business, not this module's: the table comes
- * from `plans/runner.json` (see runner-config.mjs), whose defaults are Boardbash's two
- * servers. A project served by no dev server declares `"devServers": []` and the runner
+ * from `plans/runner.json` (see runner-config.mjs), and the default is no servers at all. A
+ * project served by no dev server leaves `devServers` out (or declares `[]`) and the runner
  * skips the whole arrangement.
  *
  * Servers are best addressed as 127.0.0.1 rather than localhost: a server binding 0.0.0.0

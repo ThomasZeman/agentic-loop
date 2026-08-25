@@ -24,6 +24,14 @@ this is the single biggest lever on plan quality. Link co-located `.md` design n
 **Out:**
 - <bullet — be explicit; this is what keeps the agent from wandering>
 
+## Preconditions
+
+<Checks the executor runs before any other work, for anything this plan stands on that the
+tree does not already prove: an artifact another queued plan supplies, a tool that must be
+able to do a specific thing, a budget that must fit. Give the exact command or file test and
+the expected result; a failed precondition means blocked immediately, zero code written.
+Write "none — all assumptions verified at authoring time" when that is true.>
+
 ## Acceptance criteria
 
 <Each one phrased as something a test can assert.>

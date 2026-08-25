@@ -5,18 +5,18 @@
  * on stdout as JSON.
  *
  *   node preflight-bank-cli.mjs reuse --commit <sha>
- *     -> {"reuse":true,"visual":{"frontend-boardfest":["DPR-1 | ...", ...]}}
+ *     -> {"reuse":true,"visual":{"web":["DPR-1 | ...", ...]}}
  *
  *   node preflight-bank-cli.mjs bank --commit <new base sha> --from <old base sha>
  *                                    [--changed <package dir>]... [--measured-file <path>]
- *     -> {"banked":true,"commit":"<sha>","packages":["frontend-boardfest"]}
+ *     -> {"banked":true,"commit":"<sha>","packages":["web"]}
  *
  * Which packages have a visual suite, and what each one's result depends on, is read here from
  * the manifests under `packages/` rather than passed in - the same reason plan-tree-cli.mjs reads
  * the working tree itself. The runner's Get-ChangedPackages is a literal diff of `packages/<name>/`
  * prefixes with no dependent expansion, so the closure has to come from somewhere that knows what
- * `@nocap/frontend-boardfest` builds against: package-closure.mjs, which the runner now asks the
- * same question in the other direction before it verifies a plan.
+ * each visual package builds against: package-closure.mjs, which the runner asks the same
+ * question in the other direction before it verifies a plan.
  *
  * Reporting only: the exit code says whether the question could be answered, never what the
  * answer was. Every decision lives in preflight-bank.mjs, where it is tested.
