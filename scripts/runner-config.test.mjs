@@ -38,6 +38,17 @@ describe('resolveRunnerConfig', () => {
     assert.equal(config.gates.test.script, 'test')
   })
 
+  test('an empty packagesDir is a deliberate value, not a missing one', () => {
+    assert.equal(resolveRunnerConfig({ packagesDir: '' }).packagesDir, '')
+  })
+
+  test("a packagesDir of '.' is the repo root spelled the other way", () => {
+    assert.equal(resolveRunnerConfig({ packagesDir: '.' }).packagesDir, '')
+    assert.equal(resolveRunnerConfig({ packagesDir: './' }).packagesDir, '')
+    assert.equal(resolveRunnerConfig({ packagesDir: 'packages/' }).packagesDir, 'packages')
+    assert.equal(resolveRunnerConfig({ packagesDir: 'packages' }).packagesDir, 'packages')
+  })
+
   test('a gate override merges field by field, keeping the rest of the gate', () => {
     const config = resolveRunnerConfig({ gates: { visual: { timeoutMinutes: 5 } } })
     assert.equal(config.gates.visual.timeoutMinutes, 5)

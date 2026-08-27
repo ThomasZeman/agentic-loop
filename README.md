@@ -76,6 +76,11 @@ packages and no hooks. A project declares what it has and overrides what differs
   package with the `test` gate's script is swept in pre-flight and verified when changed.
   A directory that does not exist is warned about at startup (`!!`) and means no package
   verification for any plan in the run - check the value if the warning surprises you.
+  `""` (or `"."`) is for a project with no workspace wrapper: the packages *are* the repo
+  root's own subdirectories. That shape gets no startup warning - the repo root always
+  exists - and sweeps every root subdirectory, narrowed first to the ones carrying a
+  `package.json` and then to the ones defining the gate's script, so `node_modules`,
+  `plans` and `docs` fall out on their own.
 - `gates.test` / `gates.visual` — npm script names and deadlines. The visual gate applies
   only to packages that define its script; `report` is where its JSON report lands,
   relative to the package directory (Playwright report shape).
