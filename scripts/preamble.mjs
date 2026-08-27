@@ -40,7 +40,9 @@ function qualityGateLine(config) {
 
 function placeholderValues(config) {
   return {
-    packagesDir: config.packagesDir,
+    // Formatted here, not in the spine: a project whose packages are the repo root has no
+    // path to print, and `{{packagesDir}}/` would render as a bare slash in every prompt.
+    packagesLocation: config.packagesDir === '' ? 'the repo root' : `\`${config.packagesDir}/\``,
     testScript: config.gates.test.script,
     visualScript: config.gates.visual.script,
     qualityGateLine: qualityGateLine(config),

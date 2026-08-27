@@ -41,7 +41,12 @@ const SERVER_DEFAULTS = Object.freeze({
 const SERVER_REQUIRED_FIELDS = Object.freeze(['name', 'url', 'packageDir', 'npmScript'])
 
 export const DEFAULT_CONFIG = Object.freeze({
-  /** Repo-relative directory holding one workspace package per subdirectory. */
+  /**
+   * Repo-relative directory holding one workspace package per subdirectory. An empty string
+   * (or `.`) means the packages are the repo root's own subdirectories - a project with no
+   * workspace wrapper. In that shape the startup existence check cannot warn about anything,
+   * because the repo root always exists.
+   */
   packagesDir: 'packages',
   gates: Object.freeze({
     /** The per-package unit suite; a package without this script is not gated by it. */
@@ -198,6 +203,17 @@ function resolveWatcherBlind(value) {
 }
 
 /**
+ * One spelling of "the repo root", so only one reaches the pattern the runner matches commit
+ * paths against. `.`, `./` and a trailing slash all name a directory that exists, so a
+ * mis-spelled value would pass the startup check and then match nothing git ever prints -
+ * which costs a run its package verification and says nothing about it.
+ */
+function normalisePackagesDir(value) {
+  const trimmed = value.replace(/[/]+$/, '')
+  return trimmed === '.' ? '' : trimmed
+}
+
+/**
  * Merges one raw config object (or null, standing for a missing file) over the defaults.
  * Pure and throwing: the caller decides what a fault costs.
  */
@@ -211,7 +227,7 @@ export function resolveRunnerConfig(raw) {
   }
 
   return {
-    packagesDir: overrides.packagesDir ?? DEFAULT_CONFIG.packagesDir,
+    packagesDir: normalisePackagesDir(overrides.packagesDir ?? DEFAULT_CONFIG.packagesDir),
     gates: resolveGates(overrides.gates ?? {}),
     devServers:
       overrides.devServers === undefined

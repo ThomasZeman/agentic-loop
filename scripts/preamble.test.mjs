@@ -1,18 +1,28 @@
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, test } from 'node:test'
 
-import { composePreamble, loadPreamble, renderSpine } from './preamble.mjs'
+import { composePreamble, loadPreamble, renderSpine, SPINE_PATH } from './preamble.mjs'
 import { resolveRunnerConfig } from './runner-config.mjs'
 
 const config = resolveRunnerConfig({})
 
 describe('renderSpine', () => {
   test('fills the gate placeholders from the config', () => {
-    const text = renderSpine('run `npm run {{testScript}}` in `{{packagesDir}}/`; visual `{{visualScript}}`', config)
+    const text = renderSpine('run `npm run {{testScript}}` in {{packagesLocation}}; visual `{{visualScript}}`', config)
     assert.equal(text, 'run `npm run test` in `packages/`; visual `test:visual`')
+  })
+
+  test('a project whose packages are the repo root is told so, not sent to a bare slash', () => {
+    const flat = renderSpine(readFileSync(SPINE_PATH, 'utf8'), resolveRunnerConfig({ packagesDir: '' }))
+    assert.match(flat, /package under the repo root/)
+    assert.doesNotMatch(flat, /package under `\/`/)
+  })
+
+  test('a project with a workspace directory still reads it as a path', () => {
+    assert.match(renderSpine(readFileSync(SPINE_PATH, 'utf8'), config), /package under `packages\/`/)
   })
 
   test('says what the quality ratchet measures when it is on, and nothing when it is off', () => {

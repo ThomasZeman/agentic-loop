@@ -135,6 +135,23 @@ describe('reading the workspace manifests', () => {
     })
   })
 
+  test("packages that are the repo root's own subdirectories are read like any other", () => {
+    withTempPackages(
+      {
+        backend: { name: '@acme/backend', dependencies: { '@acme/shared': '*' } },
+        shared: { name: '@acme/shared' },
+      },
+      (root) => {
+        const manifests = readManifests(root)
+        assert.deepEqual(
+          manifests.map((entry) => entry.directory),
+          ['backend', 'shared'],
+        )
+        assert.deepEqual(dependentsOf(['shared'], manifests), ['backend', 'shared'])
+      },
+    )
+  })
+
   test('a packages directory that does not exist reads as no packages', () => {
     assert.deepEqual(readManifests(path.join(tmpdir(), 'package-closure-absent-dir')), [])
   })

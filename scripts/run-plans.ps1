@@ -1849,19 +1849,29 @@ function Test-ChangedPackages {
         $dir = Join-Path $script:PackagesDirAbs $pkg
         if (-not (Test-Path (Join-Path $dir 'package.json'))) { continue }
 
-        # Said out loud, because a plan that edited only frontend-shared is about to spend five
-        # minutes on a package it never opened, and a red one names a package its diff does not.
-        $because = if ($changed -contains $pkg) { '' } else { " - built on what this plan changed" }
-        Write-Host "  ++ verifying package '$pkg' (npm run $($script:Config.gates.test.script))$because" -ForegroundColor DarkCyan
-        # Named per plan, not just per run. A run-wide name is overwritten by
-        # every later plan that touches the same package, so the log a red plan
-        # points at ends up holding some other plan's green output.
-        $testLog = Join-Path $LogDir "$Slug.verify-$pkg.$Stamp.txt"
-        $code = Invoke-PackageScript -Directory $dir -ScriptName $script:Config.gates.test.script `
-            -LogFile $testLog -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
+        # Asked, not assumed: npm exits non-zero on a script that does not exist, which this
+        # loop would otherwise record as a red test suite. Under a flat packagesDir every root
+        # subdirectory carrying a package.json reaches here, and not all of them are gated.
+        if (Test-PackageHasScript -Directory $dir -ScriptName $script:Config.gates.test.script) {
+            # Said out loud, because a plan that edited only frontend-shared is about to spend five
+            # minutes on a package it never opened, and a red one names a package its diff does not.
+            $because = if ($changed -contains $pkg) { '' } else { " - built on what this plan changed" }
+            Write-Host "  ++ verifying package '$pkg' (npm run $($script:Config.gates.test.script))$because" -ForegroundColor DarkCyan
+            # Named per plan, not just per run. A run-wide name is overwritten by
+            # every later plan that touches the same package, so the log a red plan
+            # points at ends up holding some other plan's green output.
+            $testLog = Join-Path $LogDir "$Slug.verify-$pkg.$Stamp.txt"
+            $code = Invoke-PackageScript -Directory $dir -ScriptName $script:Config.gates.test.script `
+                -LogFile $testLog -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
 
-        if ($code -ne 0) {
-            $problems += "package '$pkg' test suite is red (exit $code) - see $testLog"
+            if ($code -ne 0) {
+                $problems += "package '$pkg' test suite is red (exit $code) - see $testLog"
+            }
+        }
+        else {
+            # Not silence: a package that quietly stops being gated is how a hole opens up. The
+            # visual gate and the quality ratchet below still apply - only this one does not.
+            Write-Host "  -- package '$pkg' defines no '$($script:Config.gates.test.script)' script - not gated by it" -ForegroundColor DarkGray
         }
 
         $visual = Test-PackageVisuals -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
@@ -3284,7 +3294,12 @@ $repoRoot = Get-RepoRoot
 # threading it through every function that names a gate would be all noise.
 $script:Config = Get-RunnerConfig -RepoRoot $repoRoot
 $script:PackagesDirAbs = Join-Path $repoRoot $script:Config.packagesDir
-$script:PackagesPattern = '^' + [regex]::Escape($script:Config.packagesDir) + '/([^/]+)/'
+# An empty packagesDir means the packages are the repo root's own subdirectories, so there is
+# no prefix to strip - and appending '/' to nothing would produce '^/(...)', which matches no
+# path git ever prints.
+$packagesPrefix = if ($script:Config.packagesDir -eq '') { '' }
+                  else { [regex]::Escape($script:Config.packagesDir) + '/' }
+$script:PackagesPattern = '^' + $packagesPrefix + '([^/]+)/'
 
 # Said out loud, not thrown: a repo with no packages is legitimate, but a typo here would
 # otherwise merge every plan of an eight-hour run with no test verification and no sign of it.

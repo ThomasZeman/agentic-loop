@@ -62,7 +62,7 @@ Implement **this plan file and nothing else**.
 ## 3) Verify — machine gates
 
 **The runner re-verifies your commit itself and does not take your word for it.** For every
-package under `{{packagesDir}}/` that your commit touched — and every package built on one of
+package under {{packagesLocation}} that your commit touched — and every package built on one of
 those — it runs, in that package's directory:
 
 - `npm run {{testScript}}` — must be green.
