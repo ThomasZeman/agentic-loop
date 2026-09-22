@@ -103,6 +103,18 @@ not just the spec that covers the thing you built. A gate that goes red after yo
 scoped repair session at most, and that session may not re-record a snapshot — so the sweep is far
 cheaper run by you, now.
 
+**Never end a turn waiting on a background task.** The sweep is slow, so the tempting move is to
+start it in the background and hand the turn back — *"the sweep is running (~5 minutes), I'll
+report when it lands."* **Your turn ending is your session ending.** There is no later turn: the
+runner tears the session down, kills the task, and records a plan with a complete working tree and
+no commit. Two sessions have been lost exactly this way, both on the visual sweep, both after
+doing every bit of their work correctly.
+
+Run it in the foreground and wait there, however long it takes. If something forces the job into
+the background, poll it to completion **inside the same turn** — a wait loop that exits when the
+run finishes, never a message promising to check back. The rule: the turn that starts the sweep is
+the turn that reads its result.
+
 ### Driving the live app
 
 The trailer at the end of this prompt says whether a live app is running for this batch, and at

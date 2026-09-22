@@ -1219,6 +1219,20 @@ function Test-PlanOutcome {
         $result.problems += "working tree not clean: $($assessment.blocking -join '; ')"
     }
 
+    # A session that exits cleanly having written a full tree and no commit has almost always
+    # ended a turn waiting on a background task - typically the visual sweep - because the turn
+    # ending IS the session ending: the runner tears it down and kills the task. It looks
+    # identical to an ordinary failure from here, and it is not one: the work is finished and
+    # sitting in the stash this run is about to take. Naming the signature saves whoever picks
+    # the plan up from diagnosing it from scratch, and tells them to recover rather than redo.
+    # The spine forbids the pattern (section 4); this catches the sessions that do it anyway.
+    if (-not $result.commit -and -not $assessment.clean) {
+        $result.problems +=
+            'likely an abandoned turn: the session ended with a complete tree and no commit, which ' +
+            'is what ending a turn on a background task looks like. The work is probably sound - ' +
+            'recover it from the stash this run takes and check its report before redoing anything.'
+    }
+
     if (-not $SkipVerify -and $result.commit) {
         $baselinePath = Join-Path (Split-Path $LogDir -Parent) '.quality-baseline.json'
         $found = Test-ChangedPackages -RepoRoot $RepoRoot -From $HeadBefore -To $result.commit `
