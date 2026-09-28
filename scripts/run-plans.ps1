@@ -1381,6 +1381,22 @@ function Invoke-PackageScript {
     param([string] $Directory, [string] $ScriptName, [string] $LogFile,
           [int] $TestTimeoutMinutes = 20)
 
+    $run = Start-PackageScript -Directory $Directory -ScriptName $ScriptName -LogFile $LogFile
+    return Wait-PackageScript -Run $run -TestTimeoutMinutes $TestTimeoutMinutes
+}
+
+<#
+.SYNOPSIS
+    Starts one `npm run <script>` in a package directory and returns a handle for
+    Wait-PackageScript.
+.DESCRIPTION
+    The start and the wait are separate so that a caller with several independent packages
+    can start them all and only then wait - the pre-flight does, because five suites that
+    each use a fraction of the machine take a fraction of the time when they overlap.
+#>
+function Start-PackageScript {
+    param([string] $Directory, [string] $ScriptName, [string] $LogFile)
+
     $shell = $env:ComSpec
     if ($shell) {
         $file = $shell
@@ -1399,8 +1415,24 @@ function Invoke-PackageScript {
 
     try { $null = $proc.Handle } catch { }
 
+    return [pscustomobject]@{ Process = $proc; Directory = $Directory; ScriptName = $ScriptName }
+}
+
+<#
+.SYNOPSIS
+    Waits for a script started by Start-PackageScript and returns its exit code, or 124
+    once the deadline has passed and the process tree has been killed.
+.DESCRIPTION
+    The deadline is measured from this call, not from the start. A caller waiting on several
+    runs in turn therefore grants each one the full budget from the moment it is looked at,
+    which is never less than it would have had alone.
+#>
+function Wait-PackageScript {
+    param([pscustomobject] $Run, [int] $TestTimeoutMinutes = 20)
+
+    $proc = $Run.Process
     if (-not $proc.WaitForExit($TestTimeoutMinutes * 60 * 1000)) {
-        Write-Host "  !! '$ScriptName' in '$Directory' still running after $TestTimeoutMinutes min -- killing" -ForegroundColor Red
+        Write-Host "  !! '$($Run.ScriptName)' in '$($Run.Directory)' still running after $TestTimeoutMinutes min -- killing" -ForegroundColor Red
         Stop-ProcessTree -ProcessId $proc.Id
         return 124
     }
@@ -1780,6 +1812,45 @@ function Get-TestablePackages {
     refuses the queue. It is cheap, and it is the half that says the base branch is worth
     building on at all.
 #>
+<#
+.SYNOPSIS
+    Runs every package's unit suite at once and returns one problem line per red package.
+.DESCRIPTION
+    All started before any is waited on. The suites are independent - each package's test
+    runner reads only its own tree - and none of them uses the whole machine, so run one
+    after another they left most of it idle for the sum of their times. The visual suite is
+    not among them on purpose: its screenshots are timing-sensitive, and a red measured while
+    the unit suites were fighting it for cores would be banked as the base branch's own.
+
+    Waited on in order, each with the full budget from the moment it is reached. A package that
+    hangs is thus killed no earlier than it would have been alone, and one that finished long
+    ago returns at once.
+#>
+function Invoke-PreflightUnitSuites {
+    param([object[]] $Packages, [string] $LogDir, [string] $Stamp)
+
+    $scriptName = $script:Config.gates.test.script
+    $runs = @()
+    foreach ($pkg in $Packages) {
+        Write-Host "  ++ $($pkg.Name) (npm run $scriptName)" -ForegroundColor DarkCyan
+        $testLog = Join-Path $LogDir "preflight.verify-$($pkg.Name).$Stamp.txt"
+        $run = Start-PackageScript -Directory $pkg.Directory -ScriptName $scriptName -LogFile $testLog
+        $runs += [pscustomobject]@{ Name = $pkg.Name; Log = $testLog; Run = $run }
+    }
+
+    $problems = @()
+    foreach ($entry in $runs) {
+        $code = Wait-PackageScript -Run $entry.Run -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
+        if ($code -eq 0) {
+            Write-Host "  ok $($entry.Name)" -ForegroundColor DarkGray
+            continue
+        }
+        $problems += "package '$($entry.Name)' test suite is red (exit $code) - see $($entry.Log)"
+        Write-Host "  RED $($entry.Name) (exit $code)" -ForegroundColor Red
+    }
+    return $problems
+}
+
 function Invoke-QueuePreflight {
     param([string] $RepoRoot, [string] $PlansDir, [string] $LogDir, [string] $Stamp,
           [string] $BaseCommit)
@@ -1794,16 +1865,9 @@ function Invoke-QueuePreflight {
     $baseline = Read-VisualBaseline -Path (Get-VisualBaselinePath -PlansDir $PlansDir)
     $banked = Get-BankedVisuals -RepoRoot $RepoRoot -PlansDir $PlansDir -BaseCommit $BaseCommit
 
-    foreach ($pkg in $packages) {
-        Write-Host "  ++ $($pkg.Name) (npm run $($script:Config.gates.test.script))" -ForegroundColor DarkCyan
-        $testLog = Join-Path $LogDir "preflight.verify-$($pkg.Name).$Stamp.txt"
-        $code = Invoke-PackageScript -Directory $pkg.Directory -ScriptName $script:Config.gates.test.script `
-            -LogFile $testLog -TestTimeoutMinutes $script:Config.gates.test.timeoutMinutes
-        if ($code -ne 0) {
-            $red += "package '$($pkg.Name)' test suite is red (exit $code) - see $testLog"
-            Write-Host "     RED (exit $code)" -ForegroundColor Red
-        }
+    $red += Invoke-PreflightUnitSuites -Packages $packages -LogDir $LogDir -Stamp $Stamp
 
+    foreach ($pkg in $packages) {
         if (-not (Test-PackageHasScript -Directory $pkg.Directory -ScriptName $script:Config.gates.visual.script)) { continue }
 
         if ($banked.ContainsKey($pkg.Name)) {
