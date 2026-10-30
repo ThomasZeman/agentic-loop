@@ -82,7 +82,9 @@ If a failure is pre-existing (confirm by stashing your changes and re-running), 
 
 ## 4) Verify — in a real browser
 
-Any user-visible change must be seen rendering, not just asserted in a unit test.
+Any user-visible change must be seen rendering, not just asserted in a unit test. Automated
+tests stay the verification of record; what you see here only feeds new ones (see *The live
+check* below).
 
 **Default: the project's visual test harness**, where it has one — deterministic, needs no
 running server, and is what the runner re-runs after you commit. Then **`Read` the images it
@@ -128,10 +130,32 @@ started, keeps it up for the whole batch, and stops only what it started.
   answer.
 - Drive the app the way the project section describes, and never on a browser a human is using.
 
-This is the slow path. Prefer the visual harness unless the change only shows up in a real
-session — multi-user flows, sockets, boot sequencing.
+### The live check — one manual pass, findings become automated tests
 
-If the change is not user-visible (backend, types, tooling), write **"Browser: n/a — <reason>"** in the report. That is a valid answer; a silent omission is not.
+**Automated tests are the verification of record.** The live check does not replace them and is
+never kept as a test of its own: it is a **one-off manual pass** in the live app, done once your
+automated tests and the visual harness are green, to catch what they did not think to assert.
+
+- **When.** Whenever the trailer says the live app is available and the change can be observed
+  through the app — and that includes backend changes whose effect shows in a session, a
+  response or a stored row. Do the steps the plan's Browser check names; where it names none,
+  exercise the change the way a person would. Screenshot, `Read` every image, and describe what
+  you saw.
+- **Every finding becomes an automated regression test, straight away.** When the live check
+  shows your change misbehaving: stop, write the automated test that reproduces it in the
+  package that owns the code, and **observe it red** (paste the output into the report, as in
+  §1). Then fix the code, run the gates of §3 again, and repeat the live check from the top. The
+  regression test, not the screenshot, is what keeps the defect from coming back.
+- **The plan is not done while the live check fails.** Do not commit over a known finding.
+- **Bounded.** If the third round of the live check still finds a defect in your change, stop
+  and report the plan blocked (§6): the defect, the regression test that reproduces it, and
+  what you tried.
+- A finding outside this plan's change is not yours to fix (§2): note it under **Follow-ups**,
+  with the steps that reproduce it.
+
+Write **"Browser: n/a — <reason>"** only when nothing about the change can be observed through
+the app (docs, types, pure tooling), or when the trailer says the live app is unavailable — then
+say exactly that. A silent omission is not an answer.
 
 ### Showcase it
 
@@ -243,6 +267,8 @@ Commit: <sha, or "none">
 - Package tests: <pass/fail + tail>
 - Other gates the project section names (types, lint, ...): <pass/fail each>
 - Browser: <what you ran, which images you read, what you saw — or "n/a — <reason>">
+- Live check: <"done" — the steps, the images you read, what you saw — or "n/a — <reason>">
+- Live findings: <each finding → the regression test that now covers it (path), or "none">
 - Demo: <what you staged, or "n/a — <reason>">
 
 ## Deviations from the plan
@@ -259,6 +285,7 @@ Commit: <sha, or "none">
 - [ ] Every behavioural change has a test that was observed failing first
 - [ ] Package test suite green; every other gate the project section names clean
 - [ ] User-visible change seen in a real browser, or explicitly marked n/a
+- [ ] Live check done when the live app was available, and every finding is covered by a regression test that was observed failing first
 - [ ] A change anybody can look at is showcased the way the project section asks, or marked n/a
 - [ ] Exactly one commit on the branch the runner started you on, no push/tag, and this plan file is in it
 - [ ] `git status --porcelain` shows nothing but the other queued plan files and the `scripts/` paths that were dirty before you started
