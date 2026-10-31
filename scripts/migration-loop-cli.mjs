@@ -6,7 +6,10 @@
  *   node C:/code/agentic-loop/scripts/migration-loop-cli.mjs \
  *     --target docs/frontend-target-architecture.md \
  *     --log docs/frontend-migration-log.md \
- *     --max-ticks 3 --runner-arg -SkipPreflight
+ *     --max-ticks 3 --runner-arg=-SkipPreflight
+ *
+ * Runner switches start with a dash, so they must be given as `--runner-arg=-Switch`: Node's
+ * argument parser reads a separate `-Switch` as another option and refuses it.
  *
  * Run from the target repository's root. Everything that runs is logged under `plans/logs/`:
  * one `migration-tick-N.<stamp>.jsonl` per assessor session, next to the runner's own logs.
@@ -44,7 +47,7 @@ function readOptions(argv) {
     },
   })
   if (!values.target || !values.log) {
-    throw new Error('usage: migration-loop-cli.mjs --target <doc> --log <log> [--max-ticks N] [--max-plans N] [--runner-arg -Switch]... [--dry-run]')
+    throw new Error('usage: migration-loop-cli.mjs --target <doc> --log <log> [--max-ticks N] [--max-plans N] [--runner-arg=-Switch]... [--dry-run]')
   }
   return values
 }

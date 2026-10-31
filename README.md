@@ -180,7 +180,7 @@ repeat  → with a new assessor that knows nothing but those files
 node C:\code\agentic-loop\scripts\migration-loop-cli.mjs `
   --target docs/frontend-target-architecture.md `
   --log docs/frontend-migration-log.md `
-  --max-ticks 3 --max-plans 3 --runner-arg -SkipPreflight
+  --max-ticks 3 --max-plans 3 --runner-arg=-SkipPreflight
 ```
 
 | Option | Default | Meaning |
@@ -191,7 +191,7 @@ node C:\code\agentic-loop\scripts\migration-loop-cli.mjs `
 | `--model` / `--effort` | opus / xhigh | the assessor's session (plans run at their own `effort:`) |
 | `--assess-timeout-minutes` | 60 | wall clock on one assessor session |
 | `--rate-limit-wait-minutes` | 360 | longest account-limit wait before stopping instead |
-| `--runner-arg <switch>` | none | repeatable; passed to `run-plans.ps1` verbatim |
+| `--runner-arg=<switch>` | none | repeatable; passed to `run-plans.ps1` verbatim. The `=` form is required because the switch starts with a dash |
 | `--dry-run` | off | assess and queue, then stop without running |
 
 The loop stops on its own when the assessor says `target-reached` or `needs-human`, when it gave
