@@ -139,6 +139,73 @@ The hooks are the project's own scripts and live in the project — the tool shi
 typical release hook wraps whatever already cuts the project's tags and reads its CI's run
 state; a typical demo hook posts staged screenshots to the project's ticket system.
 
+## When the account runs out
+
+A session the account refuses is not a plan that failed. It exits non-zero in about half a
+second having done nothing — no branch work, no commit, a tree holding only its own plan file
+— which from the runner's side is the same shape as a session that ran and went wrong. Read as
+one, it costs the whole queue: an exhausted five-hour window once took eight plans in under a
+minute and wrote every one of them up as work that was probably sound and sitting in a stash.
+
+So a refusal is read for what it is (`scripts/rate-limit.mjs`, off the `429` on the session's
+terminal record), and the runner sleeps the window out and starts **the same plan** again. The
+refused session's log is kept beside the retry — one refused after an hour of work is the only
+record of that hour — and the tree is left as it was, on the plan's own branch.
+
+It stops rather than waits when the window reopens further off than `-RateLimitWaitMinutes`
+(default 360 — a seven-day window is not something to sleep through), when the same plan is
+refused three times running, or under `-NoWaitForRateLimit`. Stopping means stopping: the plan
+stays queued, every plan behind it keeps no state entry at all, and the next run picks the
+queue up where it left off. A refused plan reaches neither a verdict nor the repair session —
+both would be spent against the same wall.
+
+## The migration loop: planning one tick ahead
+
+For a target state too large to plan up front (an architecture migration), a queue of plans
+written in one sitting goes stale by the tenth plan: the tree they describe no longer exists.
+`scripts/migration-loop-cli.mjs` plans one tick ahead instead:
+
+```
+assess  → a fresh headless session reads the target document, the migration log and the last
+          tick's reports, measures the code, claims 1..N plan files, appends its tick entry to
+          the log, ends with `MIGRATION-LOOP: planned …` / `target-reached` / `needs-human …`
+commit  → the log alone, on the checked-out branch (the runner needs a clean tree)
+run     → run-plans.ps1 -Only <those plans> <your runner switches>
+record  → each plan's outcome from plans/.state.json goes under the tick entry; commit
+repeat  → with a new assessor that knows nothing but those files
+```
+
+```powershell
+# from the target repo's root
+node C:\code\agentic-loop\scripts\migration-loop-cli.mjs `
+  --target docs/frontend-target-architecture.md `
+  --log docs/frontend-migration-log.md `
+  --max-ticks 3 --max-plans 3 --runner-arg -SkipPreflight
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--target` / `--log` | required | the target-state document and the migration log, repo-relative |
+| `--max-ticks` | 1 | ticks per invocation; the log makes stopping and resuming free |
+| `--max-plans` | 3 | the most plan files one assessor may claim |
+| `--model` / `--effort` | opus / xhigh | the assessor's session (plans run at their own `effort:`) |
+| `--assess-timeout-minutes` | 60 | wall clock on one assessor session |
+| `--rate-limit-wait-minutes` | 360 | longest account-limit wait before stopping instead |
+| `--runner-arg <switch>` | none | repeatable; passed to `run-plans.ps1` verbatim |
+| `--dry-run` | off | assess and queue, then stop without running |
+
+The loop stops on its own when the assessor says `target-reached` or `needs-human`, when it gave
+no usable verdict, when it named a plan it never wrote, when it changed any file other than the
+log and its plans, when two ticks in a row shipped nothing, or at the tick cap. It refuses to
+start on a dirty tree, and on Windows it needs the native `claude.exe` (Node cannot spawn the npm
+`.cmd` shim without a shell, and a shell would re-parse the allow-list).
+
+The log is the loop's only state and the human's view of it. Its contract is in the assessor
+prompt, `prompt/migration-assess.md`: **Decisions** are settled and never reopened by an
+assessor, **Open questions** block the steps that depend on them, each **Tick** entry carries
+what was planned, what the implementing sessions shipped, and what the runner recorded. The
+`.jsonl` transcript and the composed prompt of every assessor land in `plans/logs/`.
+
 ## Development
 
 ```
