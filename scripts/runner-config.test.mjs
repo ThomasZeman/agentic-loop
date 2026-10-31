@@ -101,6 +101,25 @@ describe('resolveRunnerConfig', () => {
     assert.throws(() => resolveRunnerConfig({ packageDir: 'packages' }), /unknown key 'packageDir'/)
   })
 
+  test('the visual gate ships an always-sweep list of rendering paths', () => {
+    const config = resolveRunnerConfig({})
+    assert.ok(config.gates.visual.alwaysFor.includes('.tsx'))
+    assert.ok(config.gates.visual.alwaysFor.includes('.css'))
+    assert.ok(config.gates.visual.alwaysFor.includes('tests/visual/'))
+  })
+
+  test('a project replaces the always-sweep list wholesale', () => {
+    const config = resolveRunnerConfig({ gates: { visual: { alwaysFor: ['src/ui/'] } } })
+    assert.deepEqual(config.gates.visual.alwaysFor, ['src/ui/'])
+  })
+
+  test('an always-sweep list that is not a list of strings is refused', () => {
+    assert.throws(
+      () => resolveRunnerConfig({ gates: { visual: { alwaysFor: 'src/ui/' } } }),
+      /gates\.visual\.alwaysFor must be a list of extensions and directories/,
+    )
+  })
+
   test('an unknown gate name is refused', () => {
     assert.throws(() => resolveRunnerConfig({ gates: { lint: {} } }), /unknown gate 'lint'/)
   })

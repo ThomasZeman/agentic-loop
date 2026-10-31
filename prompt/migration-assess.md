@@ -64,6 +64,13 @@ keeps the log current:
 
 A plan must never edit `{{TARGET}}` or the log's **Decisions** / **Open questions** tables.
 
+Most migration steps move wiring, types and dispatch, and no screen renders differently. For
+such a plan write `**Visual gate:** none — <why nothing renders differently>` in its **Browser
+check**, so the runner skips the full visual sweep and verifies the plan with the package's unit
+suite alone. Leave the line out for any step that touches a screen, a board, a stylesheet or a
+transition — the runner sweeps those regardless when the diff reaches a rendering path, but the
+declaration is the author's word and should be true.
+
 ## Then write your tick entry
 
 Append to `{{LOG}}` under `## Ticks` (replace the `_No ticks yet._ ` placeholder if it is still

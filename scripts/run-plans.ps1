@@ -1914,6 +1914,61 @@ function Clear-MeasuredVisuals {
     $script:MeasuredVisuals = @{}
 }
 
+<#
+.SYNOPSIS
+    Whether this plan's visual sweep of one package has to run, or may be skipped on the
+    plan's own word.
+.DESCRIPTION
+    A plan opts out by writing `**Visual gate:** none - <reason>` in its Browser check. The
+    decision - and the one way the diff overrules it, a changed path on the project's
+    always-sweep list (gates.visual.alwaysFor) - lives in scripts/visual-gate.mjs, tested.
+
+    The plan file is found from the slug, which is its name without the extension; a rebased
+    re-verification carries a `.rebased` suffix that is taken off first. A plan the runner
+    cannot find or a bridge that fails answers "run", so a tooling fault costs a sweep and
+    never a hole in the gate.
+
+    A skipped sweep measures nothing, so Save-PreflightBank cannot vouch for the merged tree
+    and the next batch's first pre-flight sweeps for itself - the price of the minutes saved
+    here, paid once per batch rather than once per plan.
+#>
+function Get-VisualGateDecision {
+    param([string] $RepoRoot, [string] $Slug, [string] $PackageName, [string] $From, [string] $To)
+
+    $runAnyway = [pscustomobject]@{ run = $true; why = 'the plan does not opt out of the visual sweep' }
+    $planPath = Join-Path $PlansDir (($Slug -replace '\.rebased$', '') + '.md')
+    if (-not (Test-Path $planPath)) { return $runAnyway }
+
+    $diffFile = New-TempPath '.diff.txt'
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        @(Invoke-Git @('-C', $RepoRoot, 'diff', '--name-only', "$From..$To")) |
+            Out-File -FilePath $diffFile -Encoding utf8
+
+        $prefix = $script:Config.packagesDir
+        if ($prefix) { $prefix = "$prefix/$PackageName/" } else { $prefix = "$PackageName/" }
+        $code = Invoke-CapturedProcess -FilePath 'node' `
+            -Arguments @((Join-Path $PSScriptRoot 'visual-gate-cli.mjs'),
+                         '--plan', $planPath, '--diff-file', $diffFile, '--package-prefix', $prefix) `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+
+        if ($code -ne 0) {
+            $reason = Get-FirstLine (Get-Content -Path $stderr -Raw -Encoding UTF8) 200
+            Write-Host "     !! visual-gate-cli failed (exit $code): $reason - sweeping anyway" -ForegroundColor DarkYellow
+            return $runAnyway
+        }
+        $answer = Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -eq $answer -or $null -eq $answer.run) { return $runAnyway }
+        return [pscustomobject]@{ run = [bool] $answer.run; why = [string] $answer.why }
+    }
+    catch {
+        Write-Host "     !! could not decide the visual gate: $($_.Exception.Message) - sweeping anyway" -ForegroundColor DarkYellow
+        return $runAnyway
+    }
+    finally { Remove-Item -Path $diffFile, $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
 function Test-ChangedPackages {
     param([string] $RepoRoot, [string] $From, [string] $To, [string] $LogDir, [string] $Slug,
           [string] $Stamp, [string] $BaselinePath)
@@ -1952,10 +2007,16 @@ function Test-ChangedPackages {
             Write-Host "  -- package '$pkg' defines no '$($script:Config.gates.test.script)' script - not gated by it" -ForegroundColor DarkGray
         }
 
-        $visual = Test-PackageVisuals -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
-            -LogDir $LogDir -Slug $Slug -Stamp $Stamp
-        $problems += @($visual.problems)
-        if ($visual.measured) { $script:MeasuredVisuals[$pkg] = @($visual.failures) }
+        $gate = Get-VisualGateDecision -RepoRoot $RepoRoot -Slug $Slug -PackageName $pkg -From $From -To $To
+        if ($gate.run) {
+            $visual = Test-PackageVisuals -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
+                -LogDir $LogDir -Slug $Slug -Stamp $Stamp
+            $problems += @($visual.problems)
+            if ($visual.measured) { $script:MeasuredVisuals[$pkg] = @($visual.failures) }
+        }
+        else {
+            Write-Host "  -- skipping package '$pkg' visual suite: $($gate.why)" -ForegroundColor DarkGray
+        }
 
         $problems += Test-PackageQualityRatchet -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
             -LogDir $LogDir -Slug $Slug -Stamp $Stamp -BaselinePath $BaselinePath
@@ -2367,6 +2428,49 @@ function Remove-MergedBranch {
     Invoke-Git @('-C', $RepoRoot, 'branch', '-d', $Branch) | Out-Null
 }
 
+<#
+.SYNOPSIS
+    Deletes the earlier attempts at a plan once a later one has landed, here and on the remote.
+.DESCRIPTION
+    A failed plan keeps its branch and is pushed under its own name (Publish-FailedBranch), so
+    the work can be read from anywhere; the retry is numbered and goes beside it. Once the retry
+    is on the base branch those earlier branches are superseded copies of work that has shipped
+    in another form, and nobody comes back to delete them - until this.
+
+    -D rather than -d, on purpose: an earlier attempt's commits are not on the base branch (the
+    retry started over), so -d would always refuse. What makes the deletion safe is the
+    fast-forward that just happened, not the ancestry. The names come from
+    scripts/plan-branch-cli.mjs, which never strips a suffix off the plan's own name, so a plan
+    whose slug ends in -2 cannot take a neighbour's branch down with it.
+
+    Never escalated: the plan has landed, and a push that fails here loses nothing but tidiness.
+#>
+function Remove-SupersededAttempts {
+    param([string] $RepoRoot, [string] $PlanName, [string] $Merged, [string] $Remote)
+
+    if ($KeepPlanBranches) { return }
+
+    $cliArgs = @('attempts', '--plan', $PlanName, '--merged', $Merged)
+    if ($BranchPrefix) { $cliArgs += @('--prefix', $BranchPrefix) } else { $cliArgs += '--no-prefix' }
+    if ($Remote) { $cliArgs += @('--remote', $Remote) }
+    try { $answer = Invoke-BranchCli -RepoRoot $RepoRoot -CliArgs $cliArgs }
+    catch {
+        Write-Host "     !! could not list earlier attempts at '$PlanName': $($_.Exception.Message)" -ForegroundColor DarkYellow
+        return
+    }
+
+    foreach ($branch in @($answer.local)) {
+        Invoke-Git @('-C', $RepoRoot, 'branch', '-D', $branch) | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  ++ deleted '$branch' - an earlier attempt this plan supersedes" -ForegroundColor DarkGray }
+        else { Write-Host "     !! could not delete '$branch' (git branch -D exit $LASTEXITCODE)" -ForegroundColor DarkYellow }
+    }
+    foreach ($branch in @($answer.remote)) {
+        Invoke-Git @('-C', $RepoRoot, 'push', $Remote, '--delete', $branch) | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  ++ deleted '$Remote/$branch' - an earlier attempt this plan supersedes" -ForegroundColor DarkGray }
+        else { Write-Host "     !! could not delete '$Remote/$branch' (git push exit $LASTEXITCODE)" -ForegroundColor DarkYellow }
+    }
+}
+
 # --------------------------------------------------------------------------
 # The remote -- origin is the base branch, not this machine's copy of it
 # --------------------------------------------------------------------------
@@ -2596,6 +2700,7 @@ function Invoke-IntegrationAttempt {
     }
 
     Remove-MergedBranch -RepoRoot $RepoRoot -Branch $Branch
+    Remove-SupersededAttempts -RepoRoot $RepoRoot -PlanName "$Slug.md" -Merged $Branch -Remote $sync.remote
     return (New-IntegrationResult -Commit (Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')))
 }
 

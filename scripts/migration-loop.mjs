@@ -145,10 +145,6 @@ export function allCompleted(outcomes) {
   return outcomes.length > 0 && outcomes.every((outcome) => outcome.status === 'completed')
 }
 
-export function noneCompleted(outcomes) {
-  return outcomes.length > 0 && outcomes.every((outcome) => outcome.status !== 'completed')
-}
-
 // --------------------------------------------------------------------------
 // The migration log
 // --------------------------------------------------------------------------
@@ -205,16 +201,28 @@ export function assessorWroteEntry(logBefore, logAfter, tick) {
 // --------------------------------------------------------------------------
 
 /**
- * Whether to start another tick. A verdict other than `planned` ends the loop by itself; this
- * rules on the ticks that ran: the cap, and a run of ticks where nothing landed - the shape of
- * an assessor planning the same impossible step over and over.
+ * Whether to start another tick. A verdict other than `planned` ends the loop by itself, and so
+ * does a plan that did not complete (`haltAfterRun`); what is left to rule on is the cap.
  */
-export function decideNext({ tick, maxTicks, consecutiveEmptyTicks, maxConsecutiveEmptyTicks }) {
-  if (consecutiveEmptyTicks >= maxConsecutiveEmptyTicks) {
-    return { again: false, reason: `${consecutiveEmptyTicks} ticks in a row shipped nothing` }
-  }
+export function decideNext({ tick, maxTicks }) {
   if (tick >= maxTicks) return { again: false, reason: `reached the ${maxTicks}-tick cap` }
   return { again: true, reason: null }
+}
+
+/**
+ * Why the loop stops after a run, or null when every plan landed.
+ *
+ * A failed plan ends the loop, not just the batch. The plans behind it were written against a
+ * tree that now does not exist, and the next assessor would plan on top of the same gap; a
+ * human has to look at the branch first. The runner is started with -StopOnFailure for the
+ * same reason, so the plans behind a failure read as not-run rather than as failures of their
+ * own.
+ */
+export function haltAfterRun(outcomes) {
+  const failed = outcomes.find((outcome) => outcome.status !== 'completed')
+  if (!failed) return null
+  const where = failed.branch ? `; its work is on branch ${failed.branch}` : ''
+  return `plan ${failed.plan} ended ${failed.status}${where} - the loop stops until a human has looked`
 }
 
 // --------------------------------------------------------------------------
@@ -261,7 +269,7 @@ export async function runTick(deps, options) {
   deps.writeLog(appendOutcome(deps.readLog(), tick, formatOutcome(outcomes, { finishedAt: deps.now() })))
   deps.commitLog(`migration loop: tick ${tick} ran (${outcomes.filter((o) => o.status === 'completed').length}/${plans.length} completed)`)
   deps.say(`tick ${tick}: runner exited ${exitCode}; ${outcomes.map((o) => `${o.plan} ${o.status}`).join(', ')}`)
-  return { tick, stop: null, outcomes, plans }
+  return { tick, stop: haltAfterRun(outcomes), outcomes, plans }
 }
 
 function haltAfterAssessment(verdict, plans) {
@@ -294,13 +302,11 @@ async function assessUntilNotLimited(deps, input, options) {
 export async function runLoop(deps, options) {
   const settings = {
     maxTicks: 1,
-    maxConsecutiveEmptyTicks: 2,
     maxRateLimitRetries: 3,
     dryRun: false,
     ...options,
   }
   const ticks = []
-  let consecutiveEmptyTicks = 0
   let lastOutcomes = []
   for (;;) {
     const record = await runTick(deps, { ...settings, lastOutcomes })
@@ -308,8 +314,7 @@ export async function runLoop(deps, options) {
     if (record.stop) return { ticks, reason: record.stop }
 
     lastOutcomes = record.outcomes
-    consecutiveEmptyTicks = noneCompleted(record.outcomes) ? consecutiveEmptyTicks + 1 : 0
-    const next = decideNext({ tick: ticks.length, consecutiveEmptyTicks, ...settings })
+    const next = decideNext({ tick: ticks.length, ...settings })
     if (!next.again) return { ticks, reason: next.reason }
   }
 }

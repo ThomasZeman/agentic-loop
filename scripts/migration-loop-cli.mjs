@@ -173,7 +173,9 @@ function buildDeps({ repoRoot, values }) {
     const runner = join(runnerRoot, 'scripts', 'run-plans.ps1')
     const quote = (s) => `'${s.replace(/'/g, "''")}'`
     const only = planFiles.map((name) => quote(name.replace(/\.md$/, ''))).join(',')
-    const command = `& ${quote(runner)} -Only ${only} ${values['runner-arg'].join(' ')}; exit $LASTEXITCODE`
+    // -StopOnFailure always: a tick's plans run in order against each other's trees, so the
+    // plan behind a failure has nothing valid to run on, and the loop halts on it anyway.
+    const command = `& ${quote(runner)} -Only ${only} -StopOnFailure ${values['runner-arg'].join(' ')}; exit $LASTEXITCODE`
     const shell = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
     return new Promise((resolvePromise, reject) => {
       const child = spawn(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], { cwd: repoRoot, stdio: 'inherit' })

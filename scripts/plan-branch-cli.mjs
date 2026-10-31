@@ -13,12 +13,13 @@
  *   node scripts/plan-branch-cli.mjs name --plan 142-a-thing.md [--prefix plan/]
  *   node scripts/plan-branch-cli.mjs conflicts
  *   node scripts/plan-branch-cli.mjs markers --path packages/backend/src/a.ts [--path ...]
+ *   node scripts/plan-branch-cli.mjs attempts --plan 142-a-thing.md [--merged plan/142-a-thing-2] [--remote origin]
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 
-import { chooseBranchName, conflictMarkerLines, conflictedPaths, planBranchName } from './plan-branch.mjs'
+import { attemptBranches, chooseBranchName, conflictMarkerLines, conflictedPaths, planBranchName } from './plan-branch.mjs'
 
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
@@ -31,6 +32,9 @@ const { values, positionals } = parseArgs({
     // and the next argument would be read as the prefix.
     'no-prefix': { type: 'boolean' },
     path: { type: 'string', multiple: true },
+    // For `attempts`: the attempt that just landed, and the remote failed attempts were pushed to.
+    merged: { type: 'string' },
+    remote: { type: 'string' },
   },
 })
 
@@ -78,7 +82,32 @@ function markersCommand() {
   return { found }
 }
 
-const COMMANDS = { name: nameCommand, conflicts: conflictsCommand, markers: markersCommand }
+/**
+ * The branches that were attempts at this plan and are now superseded: locally, and on
+ * `--remote` where the runner published a failed one. `--merged` names the attempt that just
+ * landed, which is not listed.
+ *
+ *   node scripts/plan-branch-cli.mjs attempts --plan 142-a-thing.md [--merged plan/142-a-thing-2] [--remote origin]
+ *     -> {"local":["plan/142-a-thing"],"remote":["plan/142-a-thing"]}
+ */
+function attemptsCommand() {
+  if (!values.plan) throw new Error('attempts needs --plan <plan-file.md>')
+
+  const desired = planBranchName(values.plan, requestedPrefix())
+  const exclude = values.merged ?? null
+  const local = attemptBranches(desired, git(['branch', '--format=%(refname:short)']), { exclude })
+  let remote = []
+  if (values.remote) {
+    const prefix = `${values.remote}/`
+    const names = git(['branch', '-r', '--format=%(refname:short)'])
+      .filter((name) => name.startsWith(prefix))
+      .map((name) => name.slice(prefix.length))
+    remote = attemptBranches(desired, names, { exclude })
+  }
+  return { local, remote, desired }
+}
+
+const COMMANDS = { name: nameCommand, conflicts: conflictsCommand, markers: markersCommand, attempts: attemptsCommand }
 
 const command = COMMANDS[positionals[0]]
 if (!command) {

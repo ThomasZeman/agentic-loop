@@ -2,11 +2,40 @@ import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
 
 import {
+  attemptBranches,
   chooseBranchName,
   conflictMarkerLines,
   conflictedPaths,
   planBranchName,
 } from './plan-branch.mjs'
+
+describe('attemptBranches', () => {
+  const existing = ['main', 'plan/142-a-thing', 'plan/142-a-thing-2', 'plan/142-a-thing-3', 'plan/142-a-thing-else', 'plan/7-other']
+
+  test('finds the plan branch and every numbered retry of it', () => {
+    assert.deepEqual(attemptBranches('plan/142-a-thing', existing), ['plan/142-a-thing', 'plan/142-a-thing-2', 'plan/142-a-thing-3'])
+  })
+
+  test('leaves out the attempt that just landed', () => {
+    assert.deepEqual(attemptBranches('plan/142-a-thing', existing, { exclude: 'plan/142-a-thing-3' }), ['plan/142-a-thing', 'plan/142-a-thing-2'])
+  })
+
+  test('a slug that merely starts the same is a different plan', () => {
+    assert.ok(!attemptBranches('plan/142-a-thing', existing).includes('plan/142-a-thing-else'))
+  })
+
+  test('never strips a suffix off the plan name it is given', () => {
+    assert.deepEqual(attemptBranches('plan/142-a-thing-2', existing), ['plan/142-a-thing-2'])
+  })
+
+  test('matches case-insensitively and returns the spelling git printed', () => {
+    assert.deepEqual(attemptBranches('plan/142-A-Thing', ['Plan/142-a-thing-2']), ['Plan/142-a-thing-2'])
+  })
+
+  test('nothing when no attempt exists', () => {
+    assert.deepEqual(attemptBranches('plan/9-new', existing), [])
+  })
+})
 
 describe('planBranchName', () => {
   test('names the branch after the plan, without the extension', () => {

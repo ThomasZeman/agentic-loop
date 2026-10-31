@@ -83,7 +83,14 @@ packages and no hooks. A project declares what it has and overrides what differs
   `plans` and `docs` fall out on their own.
 - `gates.test` / `gates.visual` — npm script names and deadlines. The visual gate applies
   only to packages that define its script; `report` is where its JSON report lands,
-  relative to the package directory (Playwright report shape).
+  relative to the package directory (Playwright report shape). A plan may opt out of the
+  sweep by writing `**Visual gate:** none — <reason>` in its *Browser check*; the runner
+  honours that unless the plan's diff touches a path on `gates.visual.alwaysFor` (file
+  extensions with a leading dot, directory segments with a trailing slash — defaults cover
+  `.tsx`, stylesheets, images and `tests/visual/`; a project value replaces the list). The
+  decision is printed per package (`-- skipping package 'web' visual suite: ...`) and lives
+  in `scripts/visual-gate.mjs`. A skipped sweep measures nothing, so the pre-flight bank is
+  not refreshed by that merge.
 - `gates.quality.enabled` — the tsc/eslint count ratchet; turn off for non-TypeScript
   repos.
 - `devServers` — the app the runner brings up for the batch. `readyWhen` is
@@ -196,7 +203,9 @@ node C:\code\agentic-loop\scripts\migration-loop-cli.mjs `
 
 The loop stops on its own when the assessor says `target-reached` or `needs-human`, when it gave
 no usable verdict, when it named a plan it never wrote, when it changed any file other than the
-log and its plans, when two ticks in a row shipped nothing, or at the tick cap. It refuses to
+log and its plans, when any plan of a tick ends other than `completed` (the runner is started
+with `-StopOnFailure`, so the plans behind it are recorded `not-run`, and the loop names the
+failed plan and its branch and does not start another tick), or at the tick cap. It refuses to
 start on a dirty tree, and on Windows it needs the native `claude.exe` (Node cannot spawn the npm
 `.cmd` shim without a shell, and a shell would re-parse the allow-list).
 

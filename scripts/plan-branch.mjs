@@ -59,6 +59,29 @@ export function chooseBranchName(desired, existingNames) {
   throw new Error(`No free branch name for '${desired}' after ${MAX_ATTEMPTS} attempts.`)
 }
 
+/**
+ * Every branch that was an attempt at this plan: `desired` itself and `desired-N`, as
+ * `chooseBranchName` spells them, out of `existingNames`. `exclude` is left out - the attempt
+ * that just landed, when the question is which earlier ones it supersedes.
+ *
+ * Only the numbered shape counts. A plan whose own slug ends in `-2` names a different plan,
+ * so this never strips a suffix off `desired`: the caller passes the plan's own name and the
+ * numbering is read on top of it. Matched case-insensitively like the free-name search, and the
+ * names are returned as git printed them, so a `git branch -D` gets the exact spelling.
+ */
+export function attemptBranches(desired, existingNames, { exclude = null } = {}) {
+  const base = desired.trim().toLowerCase()
+  const skip = exclude ? exclude.trim().toLowerCase() : null
+  const pattern = new RegExp(`^${escapeRegExp(base)}(?:-\\d+)?$`)
+  return existingNames
+    .map((name) => name.trim())
+    .filter((name) => name && name.toLowerCase() !== skip && pattern.test(name.toLowerCase()))
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /** The two-letter porcelain codes that mean "git could not merge this file". */
 const UNMERGED = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'])
 

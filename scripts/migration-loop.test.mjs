@@ -8,6 +8,7 @@ import {
   composePrompt,
   decideNext,
   describeOutcomes,
+  haltAfterRun,
   newPlanFiles,
   nextTickNumber,
   parseVerdict,
@@ -120,20 +121,33 @@ describe('the log', () => {
 
 describe('decideNext', () => {
   test('stops at the cap', () => {
-    assert.deepEqual(decideNext({ tick: 2, maxTicks: 2, consecutiveEmptyTicks: 0, maxConsecutiveEmptyTicks: 2 }), {
+    assert.deepEqual(decideNext({ tick: 2, maxTicks: 2 }), {
       again: false,
       reason: 'reached the 2-tick cap',
     })
   })
 
-  test('stops after a run of ticks that shipped nothing', () => {
-    const next = decideNext({ tick: 1, maxTicks: 9, consecutiveEmptyTicks: 2, maxConsecutiveEmptyTicks: 2 })
-    assert.equal(next.again, false)
-    assert.match(next.reason, /2 ticks in a row/)
+  test('otherwise goes on', () => {
+    assert.equal(decideNext({ tick: 1, maxTicks: 9 }).again, true)
+  })
+})
+
+describe('haltAfterRun', () => {
+  test('every plan completed means no halt', () => {
+    assert.equal(haltAfterRun([{ plan: '10-a.md', status: 'completed' }]), null)
   })
 
-  test('otherwise goes on', () => {
-    assert.equal(decideNext({ tick: 1, maxTicks: 9, consecutiveEmptyTicks: 1, maxConsecutiveEmptyTicks: 2 }).again, true)
+  test('the first plan that did not complete names itself and its branch', () => {
+    const reason = haltAfterRun([
+      { plan: '10-a.md', status: 'completed' },
+      { plan: '11-b.md', status: 'needs-review', branch: 'plan/11-b' },
+      { plan: '12-c.md', status: 'not-run' },
+    ])
+    assert.equal(reason, 'plan 11-b.md ended needs-review; its work is on branch plan/11-b - the loop stops until a human has looked')
+  })
+
+  test('a plan the runner never reached halts too, without a branch', () => {
+    assert.match(haltAfterRun([{ plan: '10-a.md', status: 'not-run' }]), /^plan 10-a\.md ended not-run - /)
   })
 })
 
@@ -200,7 +214,7 @@ describe('runLoop', () => {
 
   test('the next tick is told what the last one did', async () => {
     const { world, deps } = fakeWorld([
-      { plans: ['10-a.md'], verdict: 'planned 10-a.md', results: { '10-a.md': 'needs-review' } },
+      { plans: ['10-a.md'], verdict: 'planned 10-a.md' },
       { plans: ['11-b.md'], verdict: 'planned 11-b.md' },
     ])
     const seen = []
@@ -210,7 +224,7 @@ describe('runLoop', () => {
 
     assert.deepEqual(seen[0], [])
     assert.equal(seen[1][0].plan, '10-a.md')
-    assert.equal(seen[1][0].status, 'needs-review')
+    assert.equal(seen[1][0].status, 'completed')
     assert.equal(nextTickNumber(world.log), 3)
   })
 
@@ -276,14 +290,17 @@ describe('runLoop', () => {
     assert.match(result.reason, /did not say when/)
   })
 
-  test('two ticks in a row that ship nothing stop the loop', async () => {
+  test('a plan that fails stops the loop after its outcome is recorded; no further tick runs', async () => {
     const { world, deps } = fakeWorld([
-      { plans: ['10-a.md'], verdict: 'planned 10-a.md', results: { '10-a.md': 'needs-review' } },
-      { plans: ['11-b.md'], verdict: 'planned 11-b.md', results: { '11-b.md': 'needs-review' } },
+      { plans: ['10-a.md', '11-b.md'], verdict: 'planned 10-a.md, 11-b.md', results: { '10-a.md': 'needs-review', '11-b.md': 'not-run' } },
       { plans: ['12-c.md'], verdict: 'planned 12-c.md' },
     ])
     const result = await runLoop(deps, { maxTicks: 9, logPath: 'docs/log.md' })
-    assert.equal(world.runs.length, 2)
-    assert.match(result.reason, /2 ticks in a row shipped nothing/)
+
+    assert.equal(world.runs.length, 1)
+    assert.deepEqual(world.commits, ['migration loop: tick 1 assessed (planned)', 'migration loop: tick 1 ran (0/2 completed)'])
+    assert.match(world.log, /- `10-a\.md`: \*\*needs-review\*\*/)
+    assert.match(world.log, /- `11-b\.md`: \*\*not-run\*\*/)
+    assert.match(result.reason, /^plan 10-a\.md ended needs-review.*the loop stops until a human has looked$/)
   })
 })

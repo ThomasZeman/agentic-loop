@@ -154,6 +154,10 @@ into every plan behind it. So after a failure the runner:
   the machine that ran it. Nothing is merged by this: the branch goes up under its own name, and
   only the base branch is ever fast-forwarded. A push that fails here is reported and shrugged off —
   the plan has already failed, and losing the rest of the tidy-up over it would strand the queue.
+  Those branches are cleaned up once the plan lands another way: a numbered retry that merges
+  deletes the earlier attempts, locally and on the remote, and so does
+  `node scripts/mark-plan.mjs <plan file> completed "<reason>"` after a hand rescue
+  (`--keep-branches` to keep them). `-KeepPlanBranches` keeps every branch.
 - stashes anything the agent left loose in the tree rather than deleting it (`git stash list` to
   recover). That stash names explicit paths and never touches the queued plan files.
 - puts the plan file back on disk, untracked, so the queue can retry it — it was committed on the

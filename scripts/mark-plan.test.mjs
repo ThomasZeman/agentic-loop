@@ -1,9 +1,28 @@
 import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
 
-import { MARKABLE_STATUSES, markPlanStatus } from './mark-plan.mjs'
+import { MARKABLE_STATUSES, assertPlanFileName, markPlanStatus } from './mark-plan.mjs'
 
 const NOW = '2026-08-15T09:00:00.000Z'
+
+describe('assertPlanFileName', () => {
+  test('a plan file name passes through', () => {
+    assert.equal(assertPlanFileName('242-a-thing.md'), '242-a-thing.md')
+  })
+
+  test('a branch name is refused - it once became a bogus state key', () => {
+    assert.throws(() => assertPlanFileName('plan/242-a-thing.md'), /not a plan file name/)
+  })
+
+  test('a path is refused, forward or back slashes alike', () => {
+    assert.throws(() => assertPlanFileName('plans/242-a-thing.md'), /not a plan file name/)
+    assert.throws(() => assertPlanFileName('plans\\242-a-thing.md'), /not a plan file name/)
+  })
+
+  test('a name without the extension is refused', () => {
+    assert.throws(() => assertPlanFileName('242-a-thing'), /not a plan file name/)
+  })
+})
 
 function stateWith(entry) {
   return { '242-a-thing.md': entry }

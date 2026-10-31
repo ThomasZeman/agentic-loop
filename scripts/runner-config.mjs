@@ -51,11 +51,21 @@ export const DEFAULT_CONFIG = Object.freeze({
   gates: Object.freeze({
     /** The per-package unit suite; a package without this script is not gated by it. */
     test: Object.freeze({ script: 'test', timeoutMinutes: 20 }),
-    /** The per-package browser suite, gated by its JSON report. */
+    /**
+     * The per-package browser suite, gated by its JSON report. `alwaysFor` names the paths
+     * that always render - file extensions (leading dot) and directory segments (trailing
+     * slash): a plan that declares `Visual gate: none` is still swept when its diff touches
+     * one of them. A project override replaces the list, it does not extend it.
+     */
     visual: Object.freeze({
       script: 'test:visual',
       timeoutMinutes: 30,
       report: 'test-results/visual-report.json',
+      alwaysFor: Object.freeze([
+        '.tsx', '.jsx', '.vue', '.svelte', '.css', '.scss', '.less', '.html',
+        '.svg', '.png', '.jpg', '.webp', '.woff', '.woff2',
+        'tests/visual/', 'assets/',
+      ]),
     }),
     /** The tsc/eslint count ratchet. Off means no counts are taken at all. */
     quality: Object.freeze({ enabled: true, timeoutMinutes: 15 }),
@@ -134,7 +144,15 @@ function resolveGates(overrides) {
     assertKnownKeys(gate, Object.keys(defaults), (key) => `unknown key '${key}' in gates.${name}`)
     gates[name] = { ...defaults, ...gate }
   }
+  if (!isStringList(gates.visual.alwaysFor)) {
+    fail('gates.visual.alwaysFor must be a list of extensions and directories')
+  }
+  gates.visual.alwaysFor = [...gates.visual.alwaysFor]
   return gates
+}
+
+function isStringList(value) {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && entry !== '')
 }
 
 function resolveServer(entry, index) {

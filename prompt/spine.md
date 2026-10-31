@@ -69,6 +69,11 @@ those — it runs, in that package's directory:
 - `npm run {{visualScript}}` — where the package defines that script. Not pass/fail: the runner
   compares the set of failing test ids against the set the base branch already had
   (`plans/.visual-baseline.json`) and fails you only for a test *you* turned red, by name.
+  Skipped when the plan's *Browser check* says `**Visual gate:** none — <reason>` **and** your
+  diff touches none of the project's always-rendering paths (`gates.visual.alwaysFor` in
+  `plans/runner.json`: stylesheets, markup components, images, the visual specs). That line is
+  the plan author's word that no screen renders differently; if you find while implementing
+  that it does, run the sweep yourself anyway and say so in the report.
 {{qualityGateLine}}
 
 Run the same gates yourself, from the affected package directory, before you commit, and paste
