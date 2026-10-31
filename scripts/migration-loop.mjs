@@ -94,10 +94,15 @@ export function composePrompt(template, vars) {
   return filled
 }
 
-/** The previous tick's outcomes as the assessor should read them; or the words for "none". */
-export function describeOutcomes(outcomes) {
-  if (!outcomes || outcomes.length === 0) return 'This is the first tick; no plans have run yet.'
-  return outcomes.map(describeOutcome).join('\n')
+/**
+ * The previous tick's outcomes as the assessor should read them; or the words for "none".
+ * A process launched with `--max-ticks 1` carries no outcomes into its first tick even when
+ * earlier ticks exist, so the words for "none" depend on the tick number.
+ */
+export function describeOutcomes(outcomes, tick = 1) {
+  if (outcomes && outcomes.length > 0) return outcomes.map(describeOutcome).join('\n')
+  if (tick <= 1) return 'This is the first tick; no plans have run yet.'
+  return `This process started at tick ${tick} and carries no outcomes of its own: read tick ${tick - 1}'s **Outcome** list in the log for what the last tick ran and how each plan ended.`
 }
 
 function describeOutcome(outcome) {

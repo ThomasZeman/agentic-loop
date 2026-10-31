@@ -62,6 +62,14 @@ describe('composePrompt', () => {
 describe('describeOutcomes', () => {
   test('says so on the first tick', () => {
     assert.match(describeOutcomes([]), /first tick/)
+    assert.match(describeOutcomes([], 1), /first tick/)
+  })
+
+  test('a later tick launched on its own points at the log instead of claiming to be first', () => {
+    const text = describeOutcomes([], 3)
+    assert.doesNotMatch(text, /first tick/)
+    assert.match(text, /tick 2/)
+    assert.match(text, /Outcome/)
   })
 
   test('one line per plan with commit, branch, report and problems', () => {

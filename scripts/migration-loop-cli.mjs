@@ -137,7 +137,7 @@ function buildDeps({ repoRoot, values }) {
       REPORTS_DIR: 'plans/reports',
       PLANS_DIR: 'plans',
       DATE: new Date().toISOString().slice(0, 10),
-      LAST_OUTCOMES: describeOutcomes(lastOutcomes),
+      LAST_OUTCOMES: describeOutcomes(lastOutcomes, tick),
     })
     const promptFile = join(logsDir, `migration-tick-${tick}.${stamp()}.prompt.md`)
     const transcriptFile = promptFile.replace(/\.prompt\.md$/, '.jsonl')

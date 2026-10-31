@@ -71,6 +71,17 @@ suite alone. Leave the line out for any step that touches a screen, a board, a s
 transition — the runner sweeps those regardless when the diff reaches a rendering path, but the
 declaration is the author's word and should be true.
 
+`**Visual gate:** none` skips the sweep only. **Every plan's Browser check also names a live
+check in a local Chrome test player**, done by the implementing session the way the project
+section's "Driving the live app" rules say: a throwaway player window on this machine's Chrome,
+driven over CDP or the test-player driver, never the human's own browser. Write the steps a
+person would take to exercise exactly the path the plan changes (a boot, a route, a slide, a
+frame the backend sends), what they must see at each step, and that the session screenshots and
+`Read`s each one. A refactor that "changes nothing a player can see" is checked the same way:
+the live check is how the session validates its own work, and "Browser: n/a" is not an
+acceptable report line for a migration plan. A plan whose change is only a test file still boots
+the app once in a player and confirms it reaches the lobby.
+
 ## Then write your tick entry
 
 Append to `{{LOG}}` under `## Ticks` (replace the `_No ticks yet._ ` placeholder if it is still
