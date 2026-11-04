@@ -187,6 +187,33 @@ export function appendOutcome(logText, tick, outcomeText) {
   return logText.slice(0, tickStart) + updated + logText.slice(entryEnd)
 }
 
+const ARCHIVE_POINTER = /^_Ticks 1–\d+ are archived in .*\n\n/m
+const ARCHIVE_TITLE =
+  '# Migration log — archived ticks\n\nTick entries the loop moved out of the log, oldest first. The Decisions, Open questions and Baseline stay in the log.\n\n'
+
+/**
+ * Keep the log short enough to read every tick: move all but the last `keep` tick entries to
+ * the archive (appended, oldest first) and leave one pointer line under `## Ticks`. The loop
+ * itself needs only the newest heading (`nextTickNumber`, `appendOutcome`), and the assessor
+ * reads the tables and the recent ticks; older entries stay searchable in the archive.
+ * Returns `{log, archive}`, or null when there is nothing to move.
+ */
+export function archiveOldTicks(logText, archiveText, { keep, archiveName }) {
+  const headings = [...logText.matchAll(new RegExp(TICK_HEADING.source, 'gm'))]
+  if (!(keep >= 1) || headings.length <= keep) return null
+
+  const firstKept = headings[headings.length - keep]
+  const lastMoved = headings[headings.length - keep - 1][1]
+  const moved = logText.slice(headings[0].index, firstKept.index).trimEnd()
+  const head = logText.slice(0, headings[0].index).replace(ARCHIVE_POINTER, '').trimEnd()
+  const pointer = `_Ticks 1–${lastMoved} are archived in [\`${archiveName}\`](${archiveName}): search it, do not read it whole._`
+  const archiveStart = archiveText ? `${archiveText.trimEnd()}\n\n` : ARCHIVE_TITLE
+  return {
+    log: `${head}\n\n${pointer}\n\n${logText.slice(firstKept.index)}`,
+    archive: `${archiveStart}${moved}\n`,
+  }
+}
+
 /** The outcome lines the loop writes after the runner finishes. */
 export function formatOutcome(outcomes, { finishedAt }) {
   const lines = outcomes.map((outcome) => describeOutcome(outcome))
@@ -240,7 +267,9 @@ export function haltAfterRun(outcomes) {
  *   listPlans()                          basenames in the plans directory
  *   assess({tick, lastOutcomes})         run the assessor; → {transcript, limited, resetsAt}
  *   dirtyPaths()                         paths `git status` reports, excluding the carried plans
- *   commitLog(message)                   stage the log and commit it
+ *   readArchive() / writeArchive(text)   the archive of old tick entries beside the log (null: none yet)
+ *   archiveName                          the archive's file name, for the log's pointer line
+ *   commitLog(message)                   stage the log (and the archive) and commit it
  *   runPlans(planFiles)                  run the plan runner on exactly these; → exit code
  *   readState()                          parsed plans/.state.json, or {}
  *   now()                                ISO timestamp
@@ -272,9 +301,18 @@ export async function runTick(deps, options) {
   const exitCode = await deps.runPlans(plans)
   const outcomes = readOutcomes(deps.readState(), plans)
   deps.writeLog(appendOutcome(deps.readLog(), tick, formatOutcome(outcomes, { finishedAt: deps.now() })))
+  archiveIfLong(deps, options.keepTicks)
   deps.commitLog(`migration loop: tick ${tick} ran (${outcomes.filter((o) => o.status === 'completed').length}/${plans.length} completed)`)
   deps.say(`tick ${tick}: runner exited ${exitCode}; ${outcomes.map((o) => `${o.plan} ${o.status}`).join(', ')}`)
   return { tick, stop: haltAfterRun(outcomes), outcomes, plans }
+}
+
+/** Move old tick entries to the archive once the log holds more than `keep` (unset: never). */
+function archiveIfLong(deps, keep) {
+  const result = archiveOldTicks(deps.readLog(), deps.readArchive(), { keep, archiveName: deps.archiveName })
+  if (!result) return
+  deps.writeArchive(result.archive)
+  deps.writeLog(result.log)
 }
 
 function haltAfterAssessment(verdict, plans) {

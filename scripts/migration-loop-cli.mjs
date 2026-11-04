@@ -20,7 +20,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -43,11 +43,12 @@ function readOptions(argv) {
       'assess-timeout-minutes': { type: 'string', default: '60' },
       'rate-limit-wait-minutes': { type: 'string', default: '360' },
       'runner-arg': { type: 'string', multiple: true, default: [] },
+      'keep-ticks': { type: 'string', default: '3' },
       'dry-run': { type: 'boolean', default: false },
     },
   })
   if (!values.target || !values.log) {
-    throw new Error('usage: migration-loop-cli.mjs --target <doc> --log <log> [--max-ticks N] [--max-plans N] [--runner-arg=-Switch]... [--dry-run]')
+    throw new Error('usage: migration-loop-cli.mjs --target <doc> --log <log> [--max-ticks N] [--max-plans N] [--runner-arg=-Switch]... [--keep-ticks N] [--dry-run]')
   }
   return values
 }
@@ -120,6 +121,8 @@ function buildDeps({ repoRoot, values }) {
   const logsDir = join(plansDir, 'logs')
   const logPath = resolve(repoRoot, values.log)
   const logRel = relative(repoRoot, logPath).replace(/\\/g, '/')
+  const archivePath = logPath.replace(/(\.md)?$/, '-archive.md')
+  const archiveRel = relative(repoRoot, archivePath).replace(/\\/g, '/')
   const template = readFileSync(join(runnerRoot, 'prompt', 'migration-assess.md'), 'utf8')
   const claude = claudePath()
   mkdirSync(logsDir, { recursive: true })
@@ -162,10 +165,12 @@ function buildDeps({ repoRoot, values }) {
       .flatMap(porcelainPaths)
   }
 
+  // The log and, once the loop has archived old ticks into it, the archive beside it.
   function commitLog(message) {
-    if (git(repoRoot, ['status', '--porcelain', '--', logRel]) === '') return
-    git(repoRoot, ['add', '--', logRel])
-    git(repoRoot, ['commit', '-q', '-m', message, '--', logRel])
+    const paths = existsSync(archivePath) ? [logRel, archiveRel] : [logRel]
+    if (git(repoRoot, ['status', '--porcelain', '--', ...paths]) === '') return
+    git(repoRoot, ['add', '--', ...paths])
+    git(repoRoot, ['commit', '-q', '-m', message, '--', ...paths])
     say(`committed: ${message}`)
   }
 
@@ -192,6 +197,9 @@ function buildDeps({ repoRoot, values }) {
   return {
     readLog: () => readFileSync(logPath, 'utf8'),
     writeLog: (text) => writeFileSync(logPath, text, 'utf8'),
+    readArchive: () => (existsSync(archivePath) ? readFileSync(archivePath, 'utf8') : null),
+    writeArchive: (text) => writeFileSync(archivePath, text, 'utf8'),
+    archiveName: basename(archivePath),
     listPlans, assess, dirtyPaths, commitLog, runPlans, readState, say,
     now: () => new Date().toISOString(),
     sleep: (seconds) => new Promise((r) => setTimeout(r, seconds * 1000)),
@@ -213,6 +221,7 @@ async function main() {
   const result = await runLoop(deps, {
     maxTicks: Number(values['max-ticks']),
     dryRun: values['dry-run'],
+    keepTicks: Number(values['keep-ticks']),
     logPath: deps.logPath,
   })
   deps.say(`stopped after ${result.ticks.length} tick(s): ${result.reason}`)

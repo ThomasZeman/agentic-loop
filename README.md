@@ -199,6 +199,7 @@ node C:\code\agentic-loop\scripts\migration-loop-cli.mjs `
 | `--assess-timeout-minutes` | 60 | wall clock on one assessor session |
 | `--rate-limit-wait-minutes` | 360 | longest account-limit wait before stopping instead |
 | `--runner-arg=<switch>` | none | repeatable; passed to `run-plans.ps1` verbatim. The `=` form is required because the switch starts with a dash |
+| `--keep-ticks` | 3 | after each tick runs, tick entries older than the last N move to `<log>-archive.md` beside the log (committed with it), leaving a pointer line, so the assessor's read stays short; `0` keeps the log whole |
 | `--dry-run` | off | assess and queue, then stop without running |
 
 The loop stops on its own when the assessor says `target-reached` or `needs-human`, when it gave

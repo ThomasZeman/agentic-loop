@@ -3,6 +3,7 @@ import { describe, test } from 'node:test'
 
 import {
   appendOutcome,
+  archiveOldTicks,
   assessorWroteEntry,
   assistantText,
   composePrompt,
@@ -127,6 +128,44 @@ describe('the log', () => {
   })
 })
 
+describe('archiveOldTicks', () => {
+  const ticks = (from, to) =>
+    Array.from({ length: to - from + 1 }, (_, i) => `### Tick ${from + i} — assessed\n\nbody ${from + i}\n`).join('\n')
+  const head = '# Log\n\n## Decisions\n\n| D1 | x |\n\n## Ticks\n\n'
+  const options = { keep: 2, archiveName: 'log-archive.md' }
+  const tickNumbers = (text) => [...text.matchAll(/^### Tick (\d+)/gm)].map((m) => m[1])
+
+  test('moves all but the last `keep` ticks out, oldest first, and leaves a pointer under the ticks heading', () => {
+    const result = archiveOldTicks(head + ticks(1, 5), null, options)
+    assert.deepEqual(tickNumbers(result.log), ['4', '5'])
+    assert.deepEqual(tickNumbers(result.archive), ['1', '2', '3'])
+    assert.match(result.log, /^## Decisions\n\n\| D1 \| x \|$/m)
+    assert.match(result.log, /## Ticks\n\n_Ticks 1–3 are archived in \[`log-archive\.md`\]\(log-archive\.md\)[^\n]*_\n\n### Tick 4/)
+    assert.equal(nextTickNumber(result.log), 6)
+  })
+
+  test('appends to an existing archive and replaces the old pointer instead of stacking a second one', () => {
+    const first = archiveOldTicks(head + ticks(1, 4), null, options)
+    const second = archiveOldTicks(`${first.log}\n${ticks(5, 6)}`, first.archive, options)
+    assert.deepEqual(tickNumbers(second.archive), ['1', '2', '3', '4'])
+    assert.deepEqual(tickNumbers(second.log), ['5', '6'])
+    assert.equal(second.log.match(/^_Ticks 1–/gm).length, 1)
+    assert.match(second.log, /_Ticks 1–4 are archived/)
+  })
+
+  test('loses no line of the log', () => {
+    const log = head + ticks(1, 5)
+    const result = archiveOldTicks(log, null, options)
+    const kept = new Set(`${result.log}\n${result.archive}`.split('\n'))
+    assert.deepEqual(log.split('\n').filter((line) => !kept.has(line)), [])
+  })
+
+  test('does nothing while the log holds no more than `keep` ticks, or when keep is 0', () => {
+    assert.equal(archiveOldTicks(head + ticks(1, 2), null, options), null)
+    assert.equal(archiveOldTicks(head + ticks(1, 5), null, { ...options, keep: 0 }), null)
+  })
+})
+
 describe('decideNext', () => {
   test('stops at the cap', () => {
     assert.deepEqual(decideNext({ tick: 2, maxTicks: 2 }), {
@@ -169,11 +208,14 @@ describe('haltAfterRun', () => {
  * and what the fake runner then records about each plan.
  */
 function fakeWorld(script, { log = LOG } = {}) {
-  const world = { log, plans: ['_template.md'], state: {}, commits: [], said: [], runs: [], slept: [], dirty: [] }
+  const world = { log, archive: null, plans: ['_template.md'], state: {}, commits: [], said: [], runs: [], slept: [], dirty: [] }
   let call = 0
   const deps = {
     readLog: () => world.log,
     writeLog: (text) => { world.log = text },
+    readArchive: () => world.archive,
+    writeArchive: (text) => { world.archive = text },
+    archiveName: 'log-archive.md',
     listPlans: () => [...world.plans],
     dirtyPaths: () => [...world.dirty],
     commitLog: (message) => world.commits.push(message),
@@ -218,6 +260,21 @@ describe('runLoop', () => {
     assert.match(world.log, /- run finished 2026-11-01T10:00:00Z/)
     assert.equal(result.reason, 'reached the 1-tick cap')
     assert.equal(result.ticks[0].outcomes.length, 2)
+  })
+
+  test('with keepTicks, a ran tick archives the older entries before its commit; without it the log is left whole', async () => {
+    const script = [1, 2, 3].map((n) => ({ plans: [`1${n}-x.md`], verdict: `planned 1${n}-x.md` }))
+    const kept = fakeWorld(script)
+    await runLoop(kept.deps, { maxTicks: 3, keepTicks: 2, logPath: 'docs/log.md' })
+    assert.deepEqual([...kept.world.log.matchAll(/^### Tick (\d+)/gm)].map((m) => m[1]), ['2', '3'])
+    assert.match(kept.world.archive, /^### Tick 1 — assessed\n\n\*\*Outcome\.\*\*\n- `11-x\.md`: \*\*completed\*\*/m)
+    assert.match(kept.world.log, /_Ticks 1–1 are archived in \[`log-archive\.md`\]/)
+    assert.equal(kept.world.commits.at(-1), 'migration loop: tick 3 ran (1/1 completed)')
+
+    const whole = fakeWorld(script)
+    await runLoop(whole.deps, { maxTicks: 3, logPath: 'docs/log.md' })
+    assert.equal(whole.world.archive, null)
+    assert.equal([...whole.world.log.matchAll(/^### Tick \d+/gm)].length, 3)
   })
 
   test('the next tick is told what the last one did', async () => {
