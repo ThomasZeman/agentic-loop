@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { describe, test } from 'node:test'
 
-import { DEFAULT_EFFORT, EFFORT_LEVELS, readPlanHeader, splitFrontMatter } from './plan-header.mjs'
+import { DEFAULT_EFFORT, EFFORT_LEVELS, MODELS, readPlanHeader, splitFrontMatter } from './plan-header.mjs'
 
 const PLAN = `# Settings content lines up on one edge
 
@@ -138,5 +138,41 @@ describe('readPlanHeader', () => {
 
   test('carries the body through, so the caller never re-reads the file', () => {
     assert.equal(readPlanHeader(`---\neffort: low\n---\n${PLAN}`).body, PLAN)
+  })
+})
+
+describe('readPlanHeader: model', () => {
+  test('reads the model the plan asked for, beside its effort', () => {
+    const header = readPlanHeader('---\neffort: high\nmodel: sonnet\n---\nbody\n')
+    assert.equal(header.model, 'sonnet')
+    assert.equal(header.effort, 'high')
+    assert.equal(header.problem, null)
+  })
+
+  test('accepts every model alias the runner passes on', () => {
+    for (const model of MODELS) {
+      assert.equal(readPlanHeader(`---\nmodel: ${model}\n---\nbody\n`).model, model)
+    }
+    assert.deepEqual(MODELS, ['opus', 'sonnet', 'haiku'])
+  })
+
+  test('is forgiving about case and stray space', () => {
+    assert.equal(readPlanHeader('---\nmodel:  Sonnet \n---\nbody\n').model, 'sonnet')
+  })
+
+  test('answers null when the plan names no model, so the runner keeps its -Model', () => {
+    assert.equal(readPlanHeader('---\neffort: low\n---\nbody\n').model, null)
+    assert.equal(readPlanHeader(PLAN).model, null)
+  })
+
+  test('refuses a model it does not know, rather than letting the CLI guess', () => {
+    const header = readPlanHeader('---\neffort: high\nmodel: sonet\n---\nbody\n')
+    assert.equal(header.model, null)
+    assert.match(header.problem, /unknown model 'sonet'/)
+    assert.match(header.problem, /opus, sonnet, haiku/)
+  })
+
+  test('refuses an empty model declaration', () => {
+    assert.match(readPlanHeader('---\nmodel:\n---\nbody\n').problem, /unknown model/)
   })
 })

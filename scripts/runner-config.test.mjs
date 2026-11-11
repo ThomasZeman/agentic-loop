@@ -120,6 +120,20 @@ describe('resolveRunnerConfig', () => {
     )
   })
 
+  test('the visual sweep runs after every plan unless a project batches it', () => {
+    assert.equal(resolveRunnerConfig({}).gates.visual.sweepEvery, 1)
+    assert.equal(resolveRunnerConfig({ gates: { visual: { sweepEvery: 8 } } }).gates.visual.sweepEvery, 8)
+  })
+
+  test('a sweep interval that is not a positive whole number is refused', () => {
+    for (const bad of [0, -1, 2.5, '8', null]) {
+      assert.throws(
+        () => resolveRunnerConfig({ gates: { visual: { sweepEvery: bad } } }),
+        /gates\.visual\.sweepEvery must be a whole number of plans, 1 or more/,
+      )
+    }
+  })
+
   test('an unknown gate name is refused', () => {
     assert.throws(() => resolveRunnerConfig({ gates: { lint: {} } }), /unknown gate 'lint'/)
   })

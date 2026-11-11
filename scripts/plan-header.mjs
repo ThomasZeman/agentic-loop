@@ -1,11 +1,10 @@
 /**
- * The front matter at the top of a plan file, and the one setting it currently carries: how
- * much effort the headless session implementing that plan should run at.
+ * The front matter at the top of a plan file, and the two settings it carries: how much effort
+ * the headless session implementing that plan should run at, and on which model.
  *
- * Every plan runs on Opus. What varies between them is how hard it is worth thinking: a copy
- * change and a concurrency fix do not deserve the same session, and until now they got one,
- * because `run-plans.ps1` passed no `--effort` at all and every plan inherited whatever the
- * CLI happened to default to.
+ * A copy change and a concurrency fix do not deserve the same session. `effort` says how hard
+ * it is worth thinking; `model` lets a mechanical plan run on a faster model (Sonnet) while the
+ * hard ones stay on the runner's default (`-Model`, Opus unless overridden).
  *
  * The header is deliberately a *header* rather than a line in the prose. It is the runner's
  * setting, not the agent's instruction, so it is taken off the top before the body is composed
@@ -23,6 +22,12 @@ export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'm
  * about work already planned, made by a default nobody chose. A plan that wants less says so.
  */
 export const DEFAULT_EFFORT = 'high'
+
+/**
+ * The model aliases a plan may name; `claude --model` resolves each to the latest of its family.
+ * A plan that names none answers `null` and runs on whatever `-Model` the runner was started with.
+ */
+export const MODELS = Object.freeze(['opus', 'sonnet', 'haiku'])
 
 /**
  * `---` on the first line, fields, `---`. Tolerates a byte-order mark, CRLF, and trailing
@@ -92,20 +97,36 @@ export function splitFrontMatter(text) {
  */
 export function readPlanHeader(text) {
   const { fields, body, problem } = splitFrontMatter(text)
-  if (problem) return { effort: null, declared: false, body, problem }
+  if (problem) return { effort: null, model: null, declared: false, body, problem }
+
+  const model = readModel(fields)
+  if (model.problem) return { effort: null, model: null, declared: true, body, problem: model.problem }
 
   if (fields.effort === undefined) {
-    return { effort: DEFAULT_EFFORT, declared: false, body, problem: null }
+    return { effort: DEFAULT_EFFORT, model: model.value, declared: false, body, problem: null }
   }
 
   const effort = fields.effort.trim().toLowerCase()
   if (!EFFORT_LEVELS.includes(effort)) {
     return {
       effort: null,
+      model: null,
       declared: true,
       body,
       problem: `unknown effort '${fields.effort}' - expected one of ${EFFORT_LEVELS.join(', ')}`,
     }
   }
-  return { effort, declared: true, body, problem: null }
+  return { effort, model: model.value, declared: true, body, problem: null }
+}
+
+/**
+ * The model a plan names, or `null` for none. Refused when unknown for the same reason as an
+ * effort typo: `claude --model sonet` fails the session, and failing before a branch is cut is
+ * cheaper than failing after.
+ */
+function readModel(fields) {
+  if (fields.model === undefined) return { value: null, problem: null }
+  const value = fields.model.trim().toLowerCase()
+  if (MODELS.includes(value)) return { value, problem: null }
+  return { value: null, problem: `unknown model '${fields.model}' - expected one of ${MODELS.join(', ')}` }
 }

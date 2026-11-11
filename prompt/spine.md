@@ -68,7 +68,7 @@ those — it runs, in that package's directory:
 - `npm run {{testScript}}` — must be green.
 - `npm run {{visualScript}}` — where the package defines that script. Not pass/fail: the runner
   compares the set of failing test ids against the set the base branch already had
-  (`plans/.visual-baseline.json`) and fails you only for a test *you* turned red, by name.
+  (`plans/.visual-baseline.json`) and fails you only for a test *you* turned red, by name.{{visualBatchNote}}
   Skipped when the plan's *Browser check* says `**Visual gate:** none — <reason>` **and** your
   diff touches none of the project's always-rendering paths (`gates.visual.alwaysFor` in
   `plans/runner.json`: stylesheets, markup components, images, the visual specs). That line is
@@ -103,12 +103,7 @@ sweep *containing one of your specs* is your problem. Do **not** "fix" an inheri
 re-recording its baseline inside an unrelated plan; re-record only what your own change genuinely
 moves.
 
-**"One of your specs" is not "a spec file you edited."** A spec's filename does not tell you which
-screens it mounts, and cross-cutting specs measure rhythm, fit and contrast on surfaces they are not
-named after. So: **if you touched anything a screen renders, run the whole sweep** before you commit,
-not just the spec that covers the thing you built. A gate that goes red after you finish buys one
-scoped repair session at most, and that session may not re-record a snapshot — so the sweep is far
-cheaper run by you, now.
+{{visualSweepPolicy}}
 
 **Never end a turn waiting on a background task.** The sweep is slow, so the tempting move is to
 start it in the background and hand the turn back — *"the sweep is running (~5 minutes), I'll

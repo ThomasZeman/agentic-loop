@@ -31,6 +31,26 @@ describe('renderSpine', () => {
     assert.equal(renderSpine('{{qualityGateLine}}', off), '')
   })
 
+  test('a per-plan sweep keeps the whole-sweep rule and adds no batch note', () => {
+    assert.equal(renderSpine('{{visualBatchNote}}', config), '')
+    assert.match(renderSpine('{{visualSweepPolicy}}', config), /run the whole sweep/)
+  })
+
+  test('a batched sweep tells the session to run targeted specs, and how often the runner sweeps', () => {
+    const batched = resolveRunnerConfig({ gates: { visual: { sweepEvery: 8 } } })
+    assert.match(renderSpine('{{visualBatchNote}}', batched), /once every 8 plans/)
+    const policy = renderSpine('{{visualSweepPolicy}}', batched)
+    assert.match(policy, /not the whole sweep/)
+    assert.match(policy, /every 8 plans/)
+    assert.doesNotMatch(policy, /run the whole sweep\*\* before you commit/)
+  })
+
+  test('the shipped spine uses both sweep placeholders', () => {
+    const spine = readFileSync(SPINE_PATH, 'utf8')
+    assert.match(spine, /\{\{visualBatchNote\}\}/)
+    assert.match(spine, /\{\{visualSweepPolicy\}\}/)
+  })
+
   test('a placeholder the spine misspells is a fault, not a literal left in the prompt', () => {
     assert.throws(() => renderSpine('{{testScirpt}}', config), /unknown placeholder 'testScirpt'/)
   })

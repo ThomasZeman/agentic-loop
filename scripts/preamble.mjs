@@ -38,6 +38,38 @@ function qualityGateLine(config) {
   )
 }
 
+function visualBatchNote(config) {
+  const every = config.gates.visual.sweepEvery
+  if (every <= 1) return ''
+  return (
+    ` This project batches it: the runner sweeps once every ${every} plans, over the base branch ` +
+    'after they have merged, not on your branch — and a red found there goes to one repair session ' +
+    'that names the plan responsible.'
+  )
+}
+
+/** The spine's paragraph for a per-plan sweep, verbatim from before batching existed. */
+const WHOLE_SWEEP_POLICY =
+  '**"One of your specs" is not "a spec file you edited."** A spec\'s filename does not tell you which\n' +
+  'screens it mounts, and cross-cutting specs measure rhythm, fit and contrast on surfaces they are not\n' +
+  'named after. So: **if you touched anything a screen renders, run the whole sweep** before you commit,\n' +
+  'not just the spec that covers the thing you built. A gate that goes red after you finish buys one\n' +
+  'scoped repair session at most, and that session may not re-record a snapshot — so the sweep is far\n' +
+  'cheaper run by you, now.'
+
+function visualSweepPolicy(config) {
+  const every = config.gates.visual.sweepEvery
+  if (every <= 1) return WHOLE_SWEEP_POLICY
+  return (
+    '**Run the specs for what you changed, not the whole sweep.** The runner sweeps the whole visual\n' +
+    `suite every ${every} plans, and a repair session there attributes each new red to the plan that\n` +
+    "caused it. So run the visual specs that mount what you touched — the plan's *Browser check* names\n" +
+    'them, and a search of the visual specs for the component or screen you changed finds the rest — and\n' +
+    're-record only what your change genuinely and intentionally moves. A red in a spec you ran is\n' +
+    'yours to fix before you commit; do not start the full sweep yourself.'
+  )
+}
+
 function placeholderValues(config) {
   return {
     // Formatted here, not in the spine: a project whose packages are the repo root has no
@@ -46,6 +78,8 @@ function placeholderValues(config) {
     testScript: config.gates.test.script,
     visualScript: config.gates.visual.script,
     qualityGateLine: qualityGateLine(config),
+    visualBatchNote: visualBatchNote(config),
+    visualSweepPolicy: visualSweepPolicy(config),
   }
 }
 

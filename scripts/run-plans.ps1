@@ -110,6 +110,12 @@ param(
     # skipping it leaves the first frontend plan to record that baseline itself.
     [switch] $SkipPreflight,
 
+    # With -SkipPreflight and a batched visual sweep (gates.visual.sweepEvery > 1) the runner still
+    # measures the visual suite's standing reds once, before the first plan - nothing else, and it
+    # never refuses to start. Without it the first batch sweep would blame its plans for every red
+    # the base branch already had. Pass this to trust plans/.visual-baseline.json as it stands.
+    [switch] $SkipVisualBaseline,
+
     # Never contact the remote: no fetch, no push. The base branch is then synced with
     # nothing and each plan is integrated locally, exactly as the runner behaved before.
     # For running the queue with no network.
@@ -167,7 +173,17 @@ param(
     # Hard wall-clock limit for the one session that gets to repair a failed gate. Larger than
     # the conflict budget because a visual red is only proved fixed by the full sweep, and that
     # is five minutes of it.
-    [int] $RepairTimeoutMinutes = 45
+    [int] $RepairTimeoutMinutes = 45,
+
+    # How long this run will sleep in front of an exhausted account window before giving the
+    # queue up. The five-hour window is the one that stops an overnight run and reopens well
+    # inside this; a seven-day window does not, and halts the queue instead of being slept on.
+    [int] $RateLimitWaitMinutes = 360,
+
+    # Never sleep through a rate limit: halt the queue at the first refused session, leaving
+    # every plan behind it queued. For a run somebody is watching, where a night spent waiting
+    # is worse than a re-launch in the morning.
+    [switch] $NoWaitForRateLimit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -543,12 +559,22 @@ $trailer
 # which have any other reason to know about effort. Empty only until the first plan is read.
 $script:PlanEffort = ''
 
+# The model the plan now running asked for in its header (`model: sonnet`), or '' for none.
+# Only the plan's own session uses it: the repair and conflict sessions that may follow are the
+# hard cases, so they always run on the runner's -Model.
+$script:PlanModel = ''
+
 function Get-ClaudeArgs {
+    param([string] $SessionModel = '')
+
+    $modelToUse = $Model
+    if ($SessionModel) { $modelToUse = $SessionModel }
+
     $claudeArgs = @(
         '--print'
         '--verbose'
         '--output-format', 'stream-json'
-        '--model', $Model
+        '--model', $modelToUse
     )
 
     # Never sent empty. `claude --effort ''` is not the same as not passing it: the CLI takes
@@ -648,20 +674,153 @@ function Stop-ProcessTree {
     finally { $ErrorActionPreference = $previous }
 }
 
+# Set when the runner decides it cannot wait an account window out. Everything behind it is
+# left unqueued rather than tried: a refused session costs half a second, so a queue that keeps
+# walking turns one exhausted window into a night of plans that were never run but are recorded
+# as plans that failed. See scripts/rate-limit.mjs for the whole of why this exists.
+$script:RateLimitHalt = $null
+
+# How many times one plan may be refused before the window is treated as one that will not
+# reopen for it. Two waits is already most of a night; a third refusal is not a window to sit
+# in front of, it is an account that has nothing left to give this run.
+$script:MaxRateLimitRefusals = 2
+
+<#
+.SYNOPSIS
+    The bridge to scripts/rate-limit.mjs, where a refusal is told from a failure and the wait
+    is decided.
+.DESCRIPTION
+    Never throws. A question that cannot be answered is answered "not a rate limit", so the
+    plan fails the ordinary way - the safe direction to be wrong in, since the other one parks
+    the whole queue for hours over a limit nobody actually reported.
+#>
+function Get-SessionRateLimit {
+    param([string] $RepoRoot, [string] $LogFile)
+
+    $stdout = New-TempPath '.json'
+    $stderr = New-TempPath '.err.txt'
+    try {
+        $code = Invoke-CapturedProcess -FilePath 'node' `
+            -Arguments @((Join-Path $PSScriptRoot 'rate-limit-cli.mjs'), 'inspect',
+                         '--log-file', $LogFile, '--max-wait-minutes', "$RateLimitWaitMinutes") `
+            -StdOutFile $stdout -StdErrFile $stderr -WorkingDirectory $RepoRoot -ProcessTimeoutMinutes 2
+
+        if ($code -ne 0) { return [pscustomobject]@{ limited = $false; wait = $false } }
+        return (Get-Content -Path $stdout -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    catch { return [pscustomobject]@{ limited = $false; wait = $false } }
+    finally { Remove-Item -Path $stdout, $stderr -Force -ErrorAction SilentlyContinue }
+}
+
+<#
+.SYNOPSIS
+    Keeps a refused session's log beside the attempt that replaces it.
+.DESCRIPTION
+    Not rotated for tidiness. A session refused on its first turn leaves eight kilobytes worth
+    reading once; a session refused after an hour of work leaves four megabytes that are the
+    only record of that hour. The retry redirects onto the same path and would truncate it.
+#>
+function Move-RefusedLog {
+    param([string] $LogFile, [string] $ErrorFile, [int] $Refusal)
+
+    foreach ($path in @($LogFile, $ErrorFile)) {
+        if (-not (Test-Path $path)) { continue }
+        # Suffixed past the extension on purpose: a kept log must not answer a later *.jsonl
+        # sweep as though it were this plan's session.
+        Move-Item -Path $path -Destination "$path.refused$Refusal" -Force -ErrorAction SilentlyContinue
+    }
+}
+
+<#
+.SYNOPSIS
+    Sleeps out an exhausted account window, saying so often enough that the log reads.
+#>
+function Wait-RateLimitWindow {
+    param([int] $Seconds)
+
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ($true) {
+        $left = [int][math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
+        if ($left -le 0) { return }
+        Write-Host ("  .. the account window reopens in {0:hh\:mm\:ss}" -f [timespan]::FromSeconds($left)) -ForegroundColor DarkGray
+        Start-Sleep -Seconds ([math]::Min($left, 600))
+    }
+}
+
+<#
+.SYNOPSIS
+    A plan's session, started again if an account limit refused it rather than ran it.
+.DESCRIPTION
+    A refused session exits non-zero in about half a second having done nothing at all, which
+    from here is the same shape as a session that ran and failed. Telling the two apart is what
+    buys an overnight queue the night: it sleeps the window out and picks the same plan up,
+    instead of spending every plan behind it in a minute against a wall.
+
+    The tree is left exactly as the refused session left it, on the plan's own branch. Almost
+    always that is nothing - the refusal came on the first turn - and where it is not, partial
+    work on its own branch is what the next attempt at the same plan should find.
+#>
 function Invoke-ClaudeOnPlan {
     param(
         [string] $PromptFile,
         [string] $LogFile,
         [string] $ErrorFile,
         [string] $WorkingDirectory,
-        [int] $SessionTimeoutMinutes
+        [int] $SessionTimeoutMinutes,
+        # '' runs on -Model; only the plan's own session passes the plan's header model.
+        [string] $SessionModel = ''
+    )
+
+    $refusals = 0
+    while ($true) {
+        $code = Start-ClaudeSession -PromptFile $PromptFile -LogFile $LogFile `
+            -ErrorFile $ErrorFile -WorkingDirectory $WorkingDirectory `
+            -SessionTimeoutMinutes $SessionTimeoutMinutes -SessionModel $SessionModel
+        if ($code -eq 0) { return $code }
+
+        $limit = Get-SessionRateLimit -RepoRoot $WorkingDirectory -LogFile $LogFile
+        if (-not $limit.limited) { return $code }
+
+        $refusals++
+        Write-Host "  !! the account refused this session: $($limit.message)" -ForegroundColor Yellow
+
+        $halt = $null
+        if ($NoWaitForRateLimit) { $halt = 'the account window is exhausted (-NoWaitForRateLimit)' }
+        elseif (-not $limit.wait) { $halt = "the account window is exhausted and $($limit.reason)" }
+        elseif ($refusals -gt $script:MaxRateLimitRefusals) {
+            $halt = "the account refused this plan $refusals times running"
+        }
+        if ($halt) {
+            $script:RateLimitHalt = $halt
+            Write-Host "  !! $halt - the queue stops here" -ForegroundColor Red
+            return $code
+        }
+
+        Move-RefusedLog -LogFile $LogFile -ErrorFile $ErrorFile -Refusal $refusals
+        Wait-RateLimitWindow -Seconds $limit.waitSeconds
+        Write-Host '  ++ the window has reopened - starting this plan again' -ForegroundColor DarkCyan
+    }
+}
+
+<#
+.SYNOPSIS
+    One session on one plan: started, streamed, and killed at the wall. Returns its exit code.
+#>
+function Start-ClaudeSession {
+    param(
+        [string] $PromptFile,
+        [string] $LogFile,
+        [string] $ErrorFile,
+        [string] $WorkingDirectory,
+        [int] $SessionTimeoutMinutes,
+        [string] $SessionModel = ''
     )
 
     $claude = Get-Command claude -ErrorAction SilentlyContinue
     if (-not $claude) { throw "'claude' CLI not found on PATH." }
 
     $proc = Start-Process -FilePath $claude.Source `
-        -ArgumentList (Get-ClaudeArgs) `
+        -ArgumentList (Get-ClaudeArgs -SessionModel $SessionModel) `
         -WorkingDirectory $WorkingDirectory `
         -RedirectStandardInput $PromptFile `
         -RedirectStandardOutput $LogFile `
@@ -1899,6 +2058,45 @@ function Invoke-QueuePreflight {
     Write-Host ''
 }
 
+<#
+.SYNOPSIS
+    The one measurement a -SkipPreflight launch still takes when the sweep is batched: the visual
+    suite's standing reds on the base branch, written to plans/.visual-baseline.json.
+.DESCRIPTION
+    No unit suites, no refusal: the base is assumed green. A package whose suite cannot run keeps
+    whatever baseline it had, and says so.
+#>
+function Update-VisualBaselineAtStart {
+    param([string] $RepoRoot, [string] $PlansDir, [string] $LogDir, [string] $Stamp, [string] $BaseCommit)
+
+    $packages = @(Get-TestablePackages -RepoRoot $RepoRoot | Where-Object {
+        Test-PackageHasScript -Directory $_.Directory -ScriptName $script:Config.gates.visual.script })
+    if ($packages.Count -eq 0) { return }
+
+    Write-Host ''
+    Write-Host "Visual baseline  |  measured once for this run (the batch sweeps compare against it)" -ForegroundColor Cyan
+    $baseline = Read-VisualBaseline -Path (Get-VisualBaselinePath -PlansDir $PlansDir)
+    $banked = Get-BankedVisuals -RepoRoot $RepoRoot -PlansDir $PlansDir -BaseCommit $BaseCommit
+    foreach ($pkg in $packages) {
+        if ($banked.ContainsKey($pkg.Name)) {
+            $baseline[$pkg.Name] = @($banked[$pkg.Name])
+            Write-Host "  == $($pkg.Name): $(@($banked[$pkg.Name]).Count) known red, already measured on $($BaseCommit.Substring(0, 8))" -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  ++ $($pkg.Name) (npm run $($script:Config.gates.visual.script) - real Chromium)" -ForegroundColor DarkCyan
+        $outcome = Invoke-VisualSuite -RepoRoot $RepoRoot -PackageName $pkg.Name -Directory $pkg.Directory `
+            -LogDir $LogDir -Slug 'visual-baseline' -Stamp $Stamp
+        if (-not $outcome.ran) {
+            Write-Host "     could not measure - keeping the baseline on disk: $(@($outcome.problems) -join '; ')" -ForegroundColor DarkYellow
+            continue
+        }
+        $baseline[$pkg.Name] = @($outcome.failures)
+        Write-Host "     $(@($outcome.failures).Count) known red" -ForegroundColor DarkGray
+    }
+    Save-VisualBaseline -Path (Get-VisualBaselinePath -PlansDir $PlansDir) -Baseline $baseline
+    Write-Host ''
+}
+
 # Package name -> the failing visual test ids this plan's own verification measured. Written
 # here and read once, at the merge, by Save-PreflightBank - the only moment at which that
 # measurement stops describing a branch and starts describing the base branch.
@@ -1913,6 +2111,10 @@ $script:MeasuredVisuals = @{}
 function Clear-MeasuredVisuals {
     $script:MeasuredVisuals = @{}
 }
+
+# The packages whose visual suite this plan's verification deferred to the batch sweep
+# (gates.visual.sweepEvery > 1). Cleared when a plan starts; read when it merges.
+$script:PlanDeferredVisuals = @{}
 
 <#
 .SYNOPSIS
@@ -1971,7 +2173,9 @@ function Get-VisualGateDecision {
 
 function Test-ChangedPackages {
     param([string] $RepoRoot, [string] $From, [string] $To, [string] $LogDir, [string] $Slug,
-          [string] $Stamp, [string] $BaselinePath)
+          [string] $Stamp, [string] $BaselinePath,
+          # The batch repair measures the visual suites itself, over the whole batch's packages.
+          [switch] $SkipVisual)
 
     $problems = @()
     $changed = @(Get-ChangedPackages -RepoRoot $RepoRoot -From $From -To $To)
@@ -2008,7 +2212,14 @@ function Test-ChangedPackages {
         }
 
         $gate = Get-VisualGateDecision -RepoRoot $RepoRoot -Slug $Slug -PackageName $pkg -From $From -To $To
-        if ($gate.run) {
+        if ($gate.run -and $SkipVisual) {
+            Write-Host "  -- package '$pkg' visual suite: measured by the batch sweep" -ForegroundColor DarkGray
+        }
+        elseif ($gate.run -and (Test-VisualSweepBatched)) {
+            $script:PlanDeferredVisuals[$pkg] = $true
+            Write-Host "  -- deferring package '$pkg' visual suite to the batch sweep (every $($script:Config.gates.visual.sweepEvery) plans)" -ForegroundColor DarkGray
+        }
+        elseif ($gate.run) {
             $visual = Test-PackageVisuals -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
                 -LogDir $LogDir -Slug $Slug -Stamp $Stamp
             $problems += @($visual.problems)
@@ -3075,6 +3286,7 @@ function Invoke-PlanOnBranch {
     $run = [ordered]@{ branch = $null; commit = $null; problems = @() }
     $headBefore = Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')
     Clear-MeasuredVisuals
+    $script:PlanDeferredVisuals = @{}
 
     try { $run.branch = New-PlanBranch -RepoRoot $RepoRoot -PlanName $Plan.Name }
     catch {
@@ -3091,7 +3303,18 @@ function Invoke-PlanOnBranch {
     }
 
     $exitCode = Invoke-ClaudeOnPlan -PromptFile $PromptFile -LogFile $LogFile `
-        -ErrorFile $ErrorFile -WorkingDirectory $RepoRoot -SessionTimeoutMinutes $TimeoutMinutes
+        -ErrorFile $ErrorFile -WorkingDirectory $RepoRoot -SessionTimeoutMinutes $TimeoutMinutes `
+        -SessionModel $script:PlanModel
+
+    # A session the account refused is not an attempt at the plan, and must not be recorded as
+    # one. Taking the verdict here is what produced the lie this guard exists for: no commit
+    # and a tree holding the plan's own file reads, to Test-PlanOutcome, as a turn abandoned on
+    # a background task - so every plan an exhausted window swallowed was written up as work
+    # that was probably sound and sitting in a stash. Nothing ran. There is nothing to recover.
+    if ($script:RateLimitHalt -and (Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')) -eq $headBefore) {
+        $run.problems = @("not run: $($script:RateLimitHalt)")
+        return [pscustomobject]$run
+    }
 
     $verdict = Get-PlanVerdict -HeadBefore $headBefore -RepoRoot $RepoRoot -LogDir $LogDir `
         -Slug $Slug -Stamp $Stamp -PlanName $Plan.Name -PendingScripts $pendingScripts
@@ -3103,7 +3326,10 @@ function Invoke-PlanOnBranch {
     # dirty tree, a session that did not exit cleanly - is still in $problems here, and makes
     # the assessment inside refuse, so this is a no-op for every failure except the one it is
     # for. See Invoke-PlanRepair.
-    if ($problems.Count -gt 0 -and $run.commit) {
+    # ...and not under a rate limit either, whatever this plan managed to commit first: the
+    # repair session would be refused on its first turn, and spend the one attempt a failed
+    # gate gets on a wall.
+    if ($problems.Count -gt 0 -and $run.commit -and -not $script:RateLimitHalt) {
         $repair = Invoke-PlanRepair -RepoRoot $RepoRoot -Branch $run.branch -PlanName $Plan.Name `
             -Problems $problems -Commit $run.commit -HeadBefore $headBefore -LogDir $LogDir `
             -Slug $Slug -Stamp $Stamp -PendingScripts $pendingScripts
@@ -3129,6 +3355,278 @@ function Invoke-PlanOnBranch {
             -From $baseBefore -Commit $integration.commit
     }
     return [pscustomobject]$run
+}
+
+# --------------------------------------------------------------------------
+# Batched visual sweep -- gates.visual.sweepEvery > 1
+# --------------------------------------------------------------------------
+
+# The batch the next sweep answers for: the plans merged since the last sweep that deferred a
+# package's visual suite to it, and those packages. A plan whose diff the visual gate would not
+# have swept (its own opt-out, no rendering path) never joins a batch.
+$script:VisualBatch = [ordered]@{ number = 0; plans = @(); packages = @{} }
+
+# Set when a batch sweep is still red after its one repair. The queue stops behind it: every
+# later plan would branch off a base with a regression nobody owns, and be blamed for it.
+$script:VisualHalt = $null
+
+<#
+.SYNOPSIS
+    Whether the visual sweep is batched rather than run on every plan's branch.
+#>
+function Test-VisualSweepBatched {
+    return ([int] $script:Config.gates.visual.sweepEvery -gt 1)
+}
+
+<#
+.SYNOPSIS
+    Records a merged plan, and the packages it deferred, in the batch the next sweep answers for.
+#>
+function Add-PlanToVisualBatch {
+    param([string] $PlanName, [string] $Commit)
+
+    if ($script:PlanDeferredVisuals.Count -eq 0) { return }
+    $script:VisualBatch.plans += [pscustomobject]@{ plan = $PlanName; commit = $Commit }
+    foreach ($pkg in $script:PlanDeferredVisuals.Keys) { $script:VisualBatch.packages[$pkg] = $true }
+}
+
+function Test-VisualBatchDue {
+    return (@($script:VisualBatch.plans).Count -ge [int] $script:Config.gates.visual.sweepEvery)
+}
+
+function Test-VisualBatchPending {
+    return (@($script:VisualBatch.plans).Count -gt 0)
+}
+
+<#
+.SYNOPSIS
+    Runs each package's visual suite on the tree as it stands and compares it with the accepted
+    set of reds. Returns the problems and, per measured package, the failing ids it saw.
+#>
+function Measure-VisualPackages {
+    param([string] $RepoRoot, [string[]] $Packages, [string] $LogDir, [string] $Slug, [string] $Stamp)
+
+    $problems = @()
+    $failures = @{}
+    foreach ($pkg in $Packages) {
+        $dir = Join-Path $script:PackagesDirAbs $pkg
+        if (-not (Test-Path (Join-Path $dir 'package.json'))) { continue }
+        $verdict = Test-PackageVisuals -RepoRoot $RepoRoot -PackageName $pkg -Directory $dir `
+            -LogDir $LogDir -Slug $Slug -Stamp $Stamp
+        $problems += @($verdict.problems)
+        if ($verdict.measured) { $failures[$pkg] = @($verdict.failures) }
+    }
+    return [pscustomobject]@{ problems = @($problems); failures = $failures }
+}
+
+<#
+.SYNOPSIS
+    After a green batch sweep the base branch is exactly what was measured, so its reds become
+    the accepted set every later plan inherits - including the ones this batch fixed.
+#>
+function Save-BatchVisualBaseline {
+    param([string] $LogDir, [hashtable] $Failures)
+
+    $path = Get-VisualBaselinePath -PlansDir (Split-Path $LogDir -Parent)
+    $baseline = Read-VisualBaseline -Path $path
+    foreach ($pkg in $Failures.Keys) { $baseline[$pkg] = @($Failures[$pkg]) }
+    Save-VisualBaseline -Path $path -Baseline $baseline
+}
+
+<#
+.SYNOPSIS
+    The prompt the one batch repair session gets.
+.DESCRIPTION
+    A double-quoted here-string: no backticks and no stray dollar signs in the body.
+#>
+function New-VisualBatchRepairPrompt {
+    param([string] $Branch, [string[]] $Problems, [object[]] $Plans)
+
+    $gates = (($Problems | ForEach-Object { "  - $_" }) -join "`n")
+    $merged = (($Plans | ForEach-Object { "  - $($_.commit.Substring(0, 8))  $($_.plan)" }) -join "`n")
+    $visualScript = $script:Config.gates.visual.script
+    return @"
+You are the plan runner's batch visual repair pass, running unattended. Nobody is watching, there
+is nobody to ask, and this is the only attempt.
+
+The runner sweeps the visual suite once per batch of plans instead of after every plan. These
+plans merged since the last sweep, oldest first, each as one commit:
+
+$merged
+
+Then the sweep over the base branch found these new reds:
+
+$gates
+
+You are on the branch '$Branch', cut from that base branch. Find which plan's commit caused each
+red and fix it:
+
+1. Read the log each problem names: the failing test ids and the assertion.
+2. Run the failing specs yourself ("npm run $visualScript -- <spec file>" in the package
+   directory) and look at the diff images under test-results/.
+3. Attribute each red to a commit: "git show --stat <commit>" for the plans above, and read the
+   plan file and its report under plans/reports/. A spec usually renders something one of
+   those commits touched.
+4. Fix the cause in the code. Re-run the failing specs, then the whole sweep
+   ("npm run $visualScript"), because a fix can move a third spec.
+5. Commit on this branch, saying in the message which plan's commit each fix repairs.
+6. Write plans/reports/visual-batch-repair.md (overwrite it if it exists): each red, the plan
+   it came from, and what you changed. Commit it with the fix.
+
+Re-recording a snapshot is allowed only when the plan that changed that screen says, in its
+own Goal or acceptance criteria, that the screen is meant to look different. A plan that says
+nothing a player sees changes (most refactor plans) did not mean to move a pixel: fix the code.
+Name every re-recorded snapshot and the plan that justifies it in the report; the runner lists
+them for a human afterwards.
+
+Hard rules:
+
+- Never delete, skip, weaken or narrow a test or an assertion to get the sweep green.
+- Do not push, do not tag, do not switch branches, and do not edit any plan file.
+- Stay with the reds above. No unrelated work.
+
+If you cannot tell which plan caused a red, or the only fix undoes what a plan set out to do,
+stop and change nothing. The runner halts the queue then, and a person looks.
+
+End your final message with one line, exactly: REPAIRED or REPAIR_BLOCKED.
+"@
+}
+
+<#
+.SYNOPSIS
+    One session on its own branch fixes what a batch turned red; the runner checks its work and
+    merges it, or tidies up and says why not.
+#>
+function Invoke-VisualBatchRepair {
+    param([string] $RepoRoot, [string] $Base, [string] $Slug, [string[]] $Problems,
+          [string[]] $Packages, [string] $LogDir, [string] $Stamp, [string] $Remote)
+
+    $failed = { param($why) [pscustomobject]@{ repaired = $false; problems = @($why); failures = @{}; commit = $null; rerecorded = @() } }
+    if ($NoRepair) { return (& $failed 'red, and -NoRepair is set') }
+    if ($script:RateLimitHalt) { return (& $failed "red, and no session can run: $($script:RateLimitHalt)") }
+
+    $planName = "$Slug.md"
+    try { $branch = New-PlanBranch -RepoRoot $RepoRoot -PlanName $planName }
+    catch { return (& $failed "could not branch for the repair: $($_.Exception.Message)") }
+    $commitBefore = Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')
+
+    Write-Host "  !! the batch sweep is red - one session gets to repair it on '$branch':" -ForegroundColor Yellow
+    foreach ($problem in $Problems) { Write-Host "       $problem" -ForegroundColor Yellow }
+
+    $promptFile = Join-Path $LogDir "$Slug.repair.$Stamp.prompt.txt"
+    Set-Content -Path $promptFile -Encoding UTF8 -Value (New-VisualBatchRepairPrompt -Branch $branch `
+        -Problems $Problems -Plans @($script:VisualBatch.plans))
+    $logFile = Join-Path $LogDir "$Slug.repair.$Stamp.jsonl"
+    $code = Invoke-ClaudeOnPlan -PromptFile $promptFile -LogFile $logFile `
+        -ErrorFile "$logFile.stderr.txt" -WorkingDirectory $RepoRoot `
+        -SessionTimeoutMinutes $RepairTimeoutMinutes
+    if ($code -ne 0) { Write-Host "     repairer exited $code" -ForegroundColor Yellow }
+
+    $problemsAfter = @()
+    $headNow = Get-GitLine @('-C', $RepoRoot, 'rev-parse', 'HEAD')
+    if ($headNow -eq $commitBefore) { $problemsAfter += "the repair session committed nothing - see $logFile" }
+    $dirty = @(Invoke-Git @('-C', $RepoRoot, 'status', '--porcelain') | Where-Object { $_ -and ($_ -notmatch ' plans/') })
+    if ($dirty.Count -gt 0) { $problemsAfter += "the repair session left the tree dirty: $(($dirty | Select-Object -First 5) -join '; ')" }
+
+    $rerecorded = @()
+    $measured = @{}
+    if ($problemsAfter.Count -eq 0) {
+        $rerecorded = @(Invoke-Git @('-C', $RepoRoot, 'diff', '--name-only', "$commitBefore..HEAD") |
+            Where-Object { $_ -match '__snapshots__|-snapshots/' })
+        Write-Host "  ++ the repair committed - re-running the gates" -ForegroundColor DarkCyan
+        $qualityBaseline = Join-Path (Split-Path $LogDir -Parent) '.quality-baseline.json'
+        $problemsAfter += @(Test-ChangedPackages -RepoRoot $RepoRoot -From $commitBefore -To 'HEAD' `
+            -LogDir $LogDir -Slug "$Slug.repair" -Stamp $Stamp -BaselinePath $qualityBaseline -SkipVisual)
+        $sweep = Measure-VisualPackages -RepoRoot $RepoRoot -Packages $Packages -LogDir $LogDir `
+            -Slug "$Slug.repaired" -Stamp $Stamp
+        $problemsAfter += @($sweep.problems)
+        $measured = $sweep.failures
+    }
+
+    if ($problemsAfter.Count -eq 0) {
+        $integration = Get-PlanIntegration -RepoRoot $RepoRoot -Base $Base -Branch $branch `
+            -LogDir $LogDir -Slug $Slug -Stamp $Stamp
+        if ($integration.ok) {
+            return [pscustomobject]@{ repaired = $true; problems = @(); failures = $measured
+                                      commit = $integration.commit; rerecorded = $rerecorded }
+        }
+        $problemsAfter += @($integration.problems)
+    }
+
+    $tidied = Reset-AfterFailedPlan -RepoRoot $RepoRoot -Base $Base -Branch $branch `
+        -PlanName $planName -Slug $Slug -Remote $Remote
+    foreach ($action in $tidied) { Write-Host "        tidy:   $action" -ForegroundColor DarkYellow }
+    return [pscustomobject]@{ repaired = $false; problems = @("the repair did not settle it - see $logFile") + $problemsAfter
+                              failures = @{}; commit = $null; rerecorded = $rerecorded }
+}
+
+<#
+.SYNOPSIS
+    Sweeps the base branch for the plans merged since the last sweep. Green: the reds it saw
+    become the accepted set. Red: one repair session; still red: the queue halts.
+.DESCRIPTION
+    Recorded in .state.json under its own name (visual-batch-<stamp>-<n>), so a morning can see
+    which plans each sweep answered for and which snapshots a repair re-recorded.
+#>
+function Invoke-VisualBatchSweep {
+    param([string] $RepoRoot, [string] $Base, [string] $LogDir, [string] $Stamp,
+          [hashtable] $State, [string] $StatePath, [string] $Remote)
+
+    $script:VisualBatch.number++
+    $slug = "visual-batch-$Stamp-$($script:VisualBatch.number)"
+    $plans = @($script:VisualBatch.plans)
+    $packages = @($script:VisualBatch.packages.Keys | Sort-Object)
+    $started = Get-Date
+
+    Write-Host ("=" * 78) -ForegroundColor Cyan
+    Write-Host "Batch visual sweep $($script:VisualBatch.number): $($plans.Count) plan(s), package(s) $($packages -join ', ')" -ForegroundColor Cyan
+    Write-Host ("=" * 78) -ForegroundColor Cyan
+
+    $outcome = [pscustomobject]@{ repaired = $false; problems = @(); failures = @{}; commit = $null; rerecorded = @() }
+    $onBranch = Get-CurrentBranch -RepoRoot $RepoRoot
+    if ($onBranch -ne $Base) {
+        $outcome.problems = @("the sweep must run on '$Base', but '$onBranch' is checked out")
+    }
+    else {
+        $sweep = Measure-VisualPackages -RepoRoot $RepoRoot -Packages $packages -LogDir $LogDir -Slug $slug -Stamp $Stamp
+        if (@($sweep.problems).Count -eq 0) {
+            $outcome.failures = $sweep.failures
+        }
+        else {
+            $outcome = Invoke-VisualBatchRepair -RepoRoot $RepoRoot -Base $Base -Slug $slug `
+                -Problems @($sweep.problems) -Packages $packages -LogDir $LogDir -Stamp $Stamp -Remote $Remote
+        }
+    }
+
+    $green = (@($outcome.problems).Count -eq 0)
+    $State[$slug] = [ordered]@{
+        status     = $(if ($green) { 'completed' } else { 'needs-review' })
+        commit     = $outcome.commit
+        plans      = @($plans | ForEach-Object { $_.plan })
+        repaired   = [bool] $outcome.repaired
+        rerecorded = @($outcome.rerecorded)
+        problems   = @($outcome.problems)
+        finishedAt = (Get-Date).ToString('o')
+        elapsedMin = [math]::Round(((Get-Date) - $started).TotalMinutes, 1)
+    }
+    Write-RunState -Path $StatePath -State $State
+
+    if ($green) {
+        Save-BatchVisualBaseline -LogDir $LogDir -Failures $outcome.failures
+        $script:VisualBatch.plans = @()
+        $script:VisualBatch.packages = @{}
+        $how = if ($outcome.repaired) { 'green after its repair' } else { 'green' }
+        Write-Host "  OK  batch visual sweep $how" -ForegroundColor Green
+        foreach ($snapshot in @($outcome.rerecorded)) {
+            Write-Host "        re-recorded: $snapshot - see plans/reports/visual-batch-repair.md" -ForegroundColor DarkYellow
+        }
+        return
+    }
+
+    $script:VisualHalt = "the batch visual sweep stayed red after its repair ($slug)"
+    Write-Host "  FAILED batch visual sweep - the queue stops here:" -ForegroundColor Red
+    foreach ($problem in @($outcome.problems)) { Write-Host "        - $problem" -ForegroundColor Red }
+    Write-Host "        plans in this batch: $(($plans | ForEach-Object { $_.plan }) -join ', ')" -ForegroundColor Red
 }
 
 # --------------------------------------------------------------------------
@@ -3639,6 +4137,8 @@ $appStatus = Get-AppStatusLine -Available $appAvailable -Reason $appReason -Serv
 $index = 0
 $needsReview = @()
 $halted = $null
+$rateLimited = $null
+$visualHalted = $null
 $planReleases = @()
 
 # Plan name -> the earlier part of its ticket that failed. Filled in as failures happen, so a
@@ -3656,6 +4156,10 @@ try {
     if (-not $DryRun -and -not $SkipPreflight -and -not $SkipVerify) {
         # After the sync, so the commit named is the one origin holds and every plan branches off.
         Invoke-QueuePreflight -RepoRoot $repoRoot -PlansDir $PlansDir -LogDir $logDir -Stamp $stamp `
+            -BaseCommit (Get-GitLine @('-C', $repoRoot, 'rev-parse', 'HEAD'))
+    }
+    elseif (-not $DryRun -and -not $SkipVerify -and -not $SkipVisualBaseline -and (Test-VisualSweepBatched)) {
+        Update-VisualBaselineAtStart -RepoRoot $repoRoot -PlansDir $PlansDir -LogDir $logDir -Stamp $stamp `
             -BaseCommit (Get-GitLine @('-C', $repoRoot, 'rev-parse', 'HEAD'))
     }
 
@@ -3682,8 +4186,12 @@ try {
         }
         else {
             $script:PlanEffort = $frontMatter.effort
+            $script:PlanModel = ''
+            if ($frontMatter.model) { $script:PlanModel = $frontMatter.model }
             $source = if ($frontMatter.declared) { 'declared' } else { 'default' }
-            Write-Host "  ++ $Model at $($frontMatter.effort) effort ($source)" -ForegroundColor DarkGray
+            $planModelName = $Model
+            if ($script:PlanModel) { $planModelName = $script:PlanModel }
+            Write-Host "  ++ $planModelName at $($frontMatter.effort) effort ($source)" -ForegroundColor DarkGray
         }
 
         $promptFile = Join-Path $logDir "$slug.$stamp.prompt.txt"
@@ -3737,6 +4245,7 @@ try {
             # What it actually ran at, not what the file said - so a plan that failed can be
             # retried at a higher level knowing which one it already had.
             effort     = $frontMatter.effort
+            model      = $(if ($frontMatter.model) { $frontMatter.model } else { $Model })
             problems   = $problems
             finishedAt = (Get-Date).ToString('o')
             elapsedMin = [math]::Round(((Get-Date) - $started).TotalMinutes, 1)
@@ -3777,6 +4286,16 @@ try {
             # After the release, so the comment can name the version the pictures are of. A
             # plan that shipped nothing still shows its work; it just says so.
             Publish-PlanDemo -RepoRoot $repoRoot -PlanPath $plan.FullName -Version $shippedVersion
+
+            Add-PlanToVisualBatch -PlanName $plan.Name -Commit $run.commit
+            if (Test-VisualBatchDue) {
+                Invoke-VisualBatchSweep -RepoRoot $repoRoot -Base $baseBranch -LogDir $logDir -Stamp $stamp `
+                    -State $state -StatePath $statePath -Remote $syncRemote
+            }
+            if ($script:VisualHalt) {
+                $visualHalted = $plan.Name
+                break
+            }
         }
         else {
             Write-Host "  FAILED verification:" -ForegroundColor Red
@@ -3810,6 +4329,22 @@ try {
                 break
             }
         }
+
+        # Last, and whatever the plan's outcome was: a plan that committed before the window
+        # closed still merged, and is still the last one this run can do. Everything behind it
+        # keeps no entry at all, so the summary reports it as not reached and the next run
+        # queues it untouched.
+        if ($script:RateLimitHalt) {
+            $rateLimited = $plan.Name
+            break
+        }
+    }
+
+    # The last, partial batch: the queue is not finished while plans it merged are unswept.
+    if (-not $DryRun -and -not $script:VisualHalt -and (Test-VisualBatchPending)) {
+        Invoke-VisualBatchSweep -RepoRoot $repoRoot -Base $baseBranch -LogDir $logDir -Stamp $stamp `
+            -State $state -StatePath $statePath -Remote $syncRemote
+        if ($script:VisualHalt) { $visualHalted = '(end of queue)' }
     }
 }
 finally {
@@ -3872,8 +4407,22 @@ foreach ($plan in $queue) {
 }
 Write-Host ("=" * 78) -ForegroundColor Cyan
 
+if ($visualHalted) {
+    Write-Host "Stopped after '$visualHalted': $($script:VisualHalt)." -ForegroundColor Red
+    Write-Host 'Every plan in that batch merged; the regression is on the base branch. Read the batch entry in .state.json and the repair log, fix it, then re-run - finished plans are skipped.' -ForegroundColor Red
+    exit 1
+}
+
 if ($halted) {
     Write-Host "Halted at '$halted' (-StopOnFailure). Re-run to continue; finished plans are skipped." -ForegroundColor Red
+    exit 1
+}
+
+# Before the needs-review list, and in its own words: nothing here is a plan that went wrong,
+# and reading it as one is how a morning gets spent on reports of sessions that never started.
+if ($rateLimited) {
+    Write-Host "Stopped at '$rateLimited': $($script:RateLimitHalt)." -ForegroundColor Red
+    Write-Host 'No plan behind it was run, and none of them were recorded - re-run once the window has reopened and the queue picks up where it stopped.' -ForegroundColor Red
     exit 1
 }
 

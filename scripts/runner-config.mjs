@@ -56,11 +56,16 @@ export const DEFAULT_CONFIG = Object.freeze({
      * that always render - file extensions (leading dot) and directory segments (trailing
      * slash): a plan that declares `Visual gate: none` is still swept when its diff touches
      * one of them. A project override replaces the list, it does not extend it.
+     *
+     * `sweepEvery` batches the sweep: 1 sweeps each plan before it merges; N > 1 defers it and
+     * sweeps the base branch once N swept plans have merged (and at the end of the queue), with
+     * one repair session for whatever that batch turned red.
      */
     visual: Object.freeze({
       script: 'test:visual',
       timeoutMinutes: 30,
       report: 'test-results/visual-report.json',
+      sweepEvery: 1,
       alwaysFor: Object.freeze([
         '.tsx', '.jsx', '.vue', '.svelte', '.css', '.scss', '.less', '.html',
         '.svg', '.png', '.jpg', '.webp', '.woff', '.woff2',
@@ -148,6 +153,9 @@ function resolveGates(overrides) {
     fail('gates.visual.alwaysFor must be a list of extensions and directories')
   }
   gates.visual.alwaysFor = [...gates.visual.alwaysFor]
+  if (!Number.isInteger(gates.visual.sweepEvery) || gates.visual.sweepEvery < 1) {
+    fail('gates.visual.sweepEvery must be a whole number of plans, 1 or more')
+  }
   return gates
 }
 
