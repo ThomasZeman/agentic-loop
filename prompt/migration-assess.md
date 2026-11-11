@@ -82,6 +82,20 @@ the live check is how the session validates its own work, and "Browser: n/a" is 
 acceptable report line for a migration plan. A plan whose change is only a test file still boots
 the app once in a player and confirms it reaches the lobby.
 
+**Do not have the implementing session repeat a check that someone else already runs.** Each
+duplicate costs minutes per plan and buys nothing the gate does not already give:
+
+- **The visual sweep.** For a plan that touches a board, a screen, a stylesheet or a transition
+  (no `Visual gate: none`), write `**Visual sweep:** runner — <spec files>` in its Browser check,
+  naming the visual specs that render what the diff changes (the board's own specs, plus any
+  cross-cutting spec that measures that surface). The session runs those specs only; the runner's
+  gate runs the full sweep after it and sends any red to its repair session. Never write "run the
+  full `npm run test:visual`" into a plan's steps or acceptance criteria.
+- **Mutation testing.** If you ran mutation sets on your scratch copy, record the result in your
+  tick entry and in the plan's *Measured first* note as evidence, but do not make re-running them
+  (`mutate.mjs --real` or similar) a step or acceptance criterion of the plan. The plan's tests are
+  the contract; the session proves them red before the change and green after it, as usual.
+
 ## Then write your tick entry
 
 Append to `{{LOG}}` under `## Ticks` (replace the `_No ticks yet._ ` placeholder if it is still
