@@ -116,6 +116,11 @@ describe('readPlanHeader', () => {
     assert.equal(header.problem, null)
   })
 
+  test('a plan that declares nothing runs at medium', () => {
+    // Calibrated for Opus 5.5, whose `medium` beats Opus 5's `high` on coding work.
+    assert.equal(DEFAULT_EFFORT, 'medium')
+  })
+
   test('falls back when front matter is present but says nothing about effort', () => {
     const header = readPlanHeader('---\nticket: ABC-142\n---\nbody\n')
     assert.equal(header.effort, DEFAULT_EFFORT)

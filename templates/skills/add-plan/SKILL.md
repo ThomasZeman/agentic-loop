@@ -105,7 +105,7 @@ Use `plans/_template.md` section-for-section. Filling each one well:
 - **Front matter — `effort:`** — the only setting the runner reads rather than the agent; it goes
   to `claude --effort` for this plan's session. Pick it *last*, by what the plan had to leave open,
   using the rubric at the foot of the template (do not copy that comment into the plan). Omitting
-  it means `high`; misspelling it fails the plan before its session starts. Say which level you
+  it means `medium`; misspelling it fails the plan before its session starts. Say which level you
   chose and why in your report.
 - **Title** — what the user gets, not how it is built.
 - **Goal** — one paragraph, phrased so "done" is unambiguous.

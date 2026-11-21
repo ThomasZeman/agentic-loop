@@ -2,7 +2,7 @@
 /**
  * The bridge `run-plans.ps1` calls to read one plan file's header, answering on stdout as JSON:
  *
- *   { "effort": "high", "declared": false, "problem": null, "body": "# Title\n..." }
+ *   { "effort": "medium", "declared": false, "problem": null, "body": "# Title\n..." }
  *
  * The body comes back with it rather than being left for PowerShell to re-read, so there is
  * exactly one answer to what the plan says and the front matter cannot reach the prompt by

@@ -200,7 +200,7 @@ Every plan runs on Opus. What a plan chooses is the *effort*, in front matter at
 
 ```markdown
 ---
-effort: high   # low | medium | high | xhigh | max
+effort: medium # low | medium | high | xhigh | max
 ---
 
 # Title
@@ -213,13 +213,15 @@ body is composed into the prompt.
 | Level | When |
 | --- | --- |
 | `low` | Mechanical and local — a string, a constant, a rename the compiler catches. |
-| `medium` | One package, an existing pattern to copy, criteria that map one-to-one onto named tests. |
-| `high` | **The default, and most plans.** Several files or packages, a new abstraction or shared type, tests that still need designing. |
+| `medium` | **The default, and most plans.** Several files or packages, an existing pattern to copy or a new abstraction the plan spells out, tests that still need designing. |
+| `high` | Design left open: an approach the plan had to argue for, a new abstraction or shared type other plans build on, or a plan that already failed at `medium` for lack of depth. |
 | `xhigh` | Concurrency or ordering, a migration or wire-format change, a bug with no known repro. |
 | `max` | Work you expect to fail at `xhigh`. Rare, and slow. |
 
-Two behaviours worth knowing. **A plan with no front matter runs at `high`** — which is every plan
-file written before this existed, so the standing queue is unchanged. And **a misspelt level fails
+The levels are calibrated for Opus 5.5 (2026-11-22): its `medium` beats Opus 5's `high` on coding
+work and it thinks more at any one level, so each kind of plan sits one level lower than it did.
+
+Two behaviours worth knowing. **A plan with no front matter runs at `medium`.** And **a misspelt level fails
 that plan before its session starts**: `claude --effort hgih` is only a warning, so the alternative
 is a plan silently running at an effort somebody deliberately chose against.
 

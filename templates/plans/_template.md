@@ -1,5 +1,5 @@
 ---
-effort: high   # low | medium | high | xhigh | max — how hard this plan's session should think
+effort: medium # low | medium | high | xhigh | max — how hard this plan's session should think
 ---
 
 # <Title — what the user gets, not how it is built>
@@ -70,15 +70,16 @@ how much it matters:
 
   low     Mechanical and local. A string, a constant, a rename the compiler catches.
           No design decision left in it, and the test to write is obvious.
-  medium  One package, an existing pattern to copy, and acceptance criteria that map
-          one-to-one onto tests this plan can already name.
-  high    The default, and most plans. Several files or packages, a new abstraction or a
-          shared type, tests that still need designing, or an approach this plan had to
-          argue for.
+  medium  The default, and most plans. Several files or packages, an existing pattern to
+          copy or a new abstraction the plan spells out, tests that still need designing.
+  high    Design left open: an approach this plan had to argue for, a new abstraction or
+          shared type other plans build on, or a plan that already failed at medium for
+          lack of depth.
   xhigh   Genuinely hard: concurrency or ordering, a migration or wire-format change, a
           bug with no known repro, criteria you could only phrase approximately.
   max     Reserve for work you expect to fail at xhigh. Rare, and slow.
 
-Omitting the header is the same as `high`. Misspelling a level fails the plan before its
+Calibrated for Opus 5.5, whose medium beats Opus 5's high on coding work, so every
+level sits one lower than it did. Omitting the header is the same as `medium`. Misspelling a level fails the plan before its
 session starts - the CLI would otherwise ignore it and run at its own default.
 -->

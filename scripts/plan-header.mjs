@@ -17,11 +17,12 @@ export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'm
 /**
  * What a plan that says nothing runs at.
  *
- * `high` rather than something cheaper because that is the standing queue: every plan file
- * written before this existed declares nothing, and lowering them all wholesale is a decision
- * about work already planned, made by a default nobody chose. A plan that wants less says so.
+ * `medium` since Opus 5.5 (2026-11-22). Effort names do not carry across models: Opus 5.5 at
+ * `medium` beats Opus 5 at `high` on coding evaluations, and at any one level it thinks more
+ * per turn. The old `high` default was set for Opus 5; keeping it would have quietly bought
+ * more thinking than anyone chose. A plan that needs more says so.
  */
-export const DEFAULT_EFFORT = 'high'
+export const DEFAULT_EFFORT = 'medium'
 
 /**
  * The model aliases a plan may name; `claude --model` resolves each to the latest of its family.
